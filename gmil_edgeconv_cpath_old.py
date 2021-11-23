@@ -5,15 +5,14 @@ Multiple Instance Graph Classification
 """
 
 from bokeh.core.enums import Palette
-from bokeh.models.filters import GroupFilter
 from bokeh.models.mappers import ColorMapper, LinearColorMapper
-from bokeh.models.sources import ColumnDataSource
 from mk_graph import mk_graph, slide_fold
 import numpy as np
 import matplotlib.pyplot as plt
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.optim.lr_scheduler import StepLR, OneCycleLR, CyclicLR
 from torch.autograd import Variable
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -23,7 +22,7 @@ from copy import deepcopy
 from numpy.random import randn #importing randn
 from torch.nn import BatchNorm1d
 from torch.nn import Sequential, Linear, ReLU
-from torch_geometric.nn import GINConv,EdgeConv, DynamicEdgeConv,global_add_pool, global_mean_pool, global_max_pool, global_sort_pool
+from torch_geometric.nn import GINConv,EdgeConv, DynamicEdgeConv,global_add_pool, global_mean_pool, global_max_pool, PANConv, PANPooling, global_sort_pool
 import time
 from tqdm import tqdm
 from scipy.spatial import distance_matrix, Delaunay
@@ -31,16 +30,20 @@ import random
 from torch_geometric.data import Data, DataLoader
 from PIL import Image
 from pathlib import Path
-from bokeh.plotting import figure, show, output_file
+from bokeh.plotting import figure, show, output_file, save
 from bokeh.layouts import layout
-from bokeh.models import Slider, Toggle, Dropdown, CDSView
+from bokeh.models import Slider, Toggle, Dropdown
 from bokeh.models.callbacks import CustomJS
 #from wasabi import change_pixel
 from bokeh.models.mappers import EqHistColorMapper
+from bokeh.embed import file_html
+from bokeh.resources import CDN
+import pandas as pd
 import sys
 
 output_file(filename="D:/Meso/TMA_vis_temp.html", title="TMA cores graph NN visualisation")
 sys.setrecursionlimit(10**4)
+
 USE_CUDA = torch.cuda.is_available()
 device = {True:'cuda',False:'cpu'}[USE_CUDA] 
 def cuda(v):
@@ -76,7 +79,9 @@ class GraphFit:
     
     Solves: min_w \sum_i {d_i x_i - \sum_j w_{i,j}x_j}
     such that:
-        \sum_i max{0,1-d_i}^2 \le \alpha n    
+        \sum_i max{0,1-d_i}^2 \le \alpha n 
+
+    wher d_i = \sum_jW_{i,j}   
     """    
     def __init__(self,n,d):          
         self.n,self.d = n,d
@@ -180,17 +185,40 @@ def calc_roc_auc(target, prediction):
     # import pdb;pdb.set_trace()
     # return roc_auc
 
+class learnable_sig(torch.nn.Module):
+    def __init__(self, fsize) -> None:
+        super(learnable_sig,self).__init__()
+        #self.l1=nn.Linear(fsize,1)
+        self.l1 = Sequential(Linear(fsize, fsize), ReLU(),
+                                    Linear(fsize, 1))
+                #self.first_h=PANConv(dim_features, out_emb_dim,5)
+        self.alpha=nn.parameter.Parameter(2*torch.ones(1))
+        self.beta=nn.parameter.Parameter(torch.zeros(1))
+        self.gamma=nn.parameter.Parameter(torch.zeros(1))
+    def forward(self,x,xcore,batch):
+        y=[]
+        for i in torch.unique(batch):
+            last_ind=torch.sum(batch<=i)-1
+            #y.append(torch.sigmoid(x[batch==i]*self.alpha-self.beta+self.gamma*torch.mean(x[batch==i]))-0.5)
+            y.append(torch.sigmoid(x[batch==i]*self.alpha-self.l1(xcore.T[:,i]))-0.5)
+        return torch.cat(y)
+
 class GIN(torch.nn.Module):
-    def __init__(self, dim_features, dim_target, layers=[16],pooling='max',dropout = 0.0,eps=0.0,train_eps=False):
+    def __init__(self, dim_features, dim_target, layers=[16],pooling='max',dropout = 0.0,eps=0.0,train_eps=False,do_ls=False):
         super(GIN, self).__init__()
         self.dropout = dropout
         self.embeddings_dim=layers
+        self.do_ls=do_ls
+        if do_ls:
+            #self.ls=learnable_sig(dim_features)
+            self.ls=learnable_sig(np.sum(layers))
         self.no_layers = len(self.embeddings_dim)
         self.first_h = []
         self.nns = []
         self.convs = []
         self.linears = []
-        self.pooling = {'max':global_max_pool,'mean':global_mean_pool,'add':global_add_pool}[pooling]
+        self.pooling = {'max':global_max_pool,'mean':global_mean_pool,'add':global_add_pool,
+             'PAN': PANPooling(in_channels=1, ratio=0.5), 'topN': global_sort_pool}[pooling]
         self.ecnns = []
         self.ecs = []
         #train_eps = True#config['train_eps']
@@ -207,6 +235,7 @@ class GIN(torch.nn.Module):
             if layer == 0:
                 self.first_h = Sequential(Linear(dim_features, out_emb_dim), BatchNorm1d(out_emb_dim), ReLU(),
                                     Linear(out_emb_dim, out_emb_dim), BatchNorm1d(out_emb_dim), ReLU())
+                #self.first_h=PANConv(dim_features, out_emb_dim,5)
                 #self.linears.append(Linear(dim_features, dim_target))
                 self.linears.append(Linear(out_emb_dim, dim_target))
             else:
@@ -223,6 +252,7 @@ class GIN(torch.nn.Module):
                 self.ecnns.append(subnet)
                 
                 self.ecs.append(EdgeConv(self.ecnns[-1],aggr='mean'))#DynamicEdgeConv#EdgeConv
+                #self.ecs.append(DynamicEdgeConv(self.ecnns[-1],k=10,aggr='mean',num_workers=8))
 
         #self.first_h = torch.nn.ModuleList(self.first_h)
         #self.nns = torch.nn.ModuleList(self.nns)
@@ -237,31 +267,54 @@ class GIN(torch.nn.Module):
     def forward(self, data):
         # Implement Equation 4.2 of the paper i.e. concat all layers' graph representations and apply linear model
         # note: this can be decomposed in one smaller linear model per layer
-        x, edge_index, batch = data.x, data.edge_index, data.batch
+        xfeat, edge_index, batch = data.x, data.edge_index, data.batch
         
         out = 0
         pooling = self.pooling
         Z = 0
 
+        last_ind=[]
+        for i in torch.unique(batch):
+            last_ind.append(torch.sum(batch<=i)-1)
+
+        core_x=[]
         for layer in range(self.no_layers):
             # print(f'Forward: layer {l}')
             if layer == 0:
-                x = self.first_h(x)
+                #x, M = self.first_h(x, edge_index)
+                x = self.first_h(xfeat)
+                if self.do_ls:
+                    core_x.append(x[last_ind,:])
                 z = self.linears[layer](x)
                 Z+=z
-                dout = F.dropout(pooling(z, batch), p=self.dropout, training=self.training)
-                out += dout
+                #dout = F.dropout(pooling(z, batch), p=self.dropout, training=self.training)
+                #dout = F.dropout(torch.mean(pooling(z, batch, 1000),dim=1,keepdim=True), p=self.dropout, training=self.training)
+                #dout=pooling(z, M, batch)
+                #dout=global_mean_pool(dout[0],dout[3])
+                #out += dout
             else:
                 # Layer l ("convolution" layer)
                 # import pdb;pdb.set_trace()
                 #x = self.convs[layer-1](x, edge_index)
                 x = self.ecs[layer-1](x,edge_index)
+                if self.do_ls:
+                    core_x.append(x[last_ind,:])
+                #x = self.ecs[layer-1](x,batch)
                 z = self.linears[layer](x)
                 Z+=z
-                dout = F.dropout(pooling(z, batch), p=self.dropout, training=self.training)#F.dropout(self.linears[layer](pooling(x, batch)), p=self.dropout, training=self.training)
-                out += dout
-        
-        return out,Z
+                #dout=pooling(z, M, batch)
+                #dout = F.dropout(torch.mean(pooling(z, batch, 1000),dim=1,keepdim=True), p=self.dropout, training=self.training)
+                #dout = F.dropout(pooling(z, batch), p=self.dropout, training=self.training)#F.dropout(self.linears[layer](pooling(x, batch)), p=self.dropout, training=self.training)
+                #out += dout
+
+        if self.do_ls:
+            core_x=torch.cat(core_x,dim=1)    
+            ZZ=self.ls(Z,core_x,batch)   #ZZ=self.ls(Z,xfeat,batch)
+            out=pooling(ZZ, batch)
+            return out,ZZ
+        else:
+            out=pooling(Z, batch)
+            return out,Z
     
    
 class NetWrapper:
@@ -270,7 +323,7 @@ class NetWrapper:
         self.loss_fun = loss_function
         self.device = torch.device(device)
         self.classification = classification
-    def _pair_train(self,train_loader,optimizer,clipping = None):
+    def _pair_train(self,train_loader,optimizer,scheduler,clipping = None):
         """
         Performs pairwise comparisons with ranking loss
         """
@@ -300,7 +353,7 @@ class NetWrapper:
                         c+=1
                         dz = output[i,-1]-output[j,-1]
                         dy = y[i]-y[j]                        
-                        loss+=torch.max(z, 1.0-dy*dz)
+                        loss+=torch.max(z, 1.0-dy*dz)  #1.0 or 0.5?
                         #loss+=lossfun(zi,zj,dy)
             loss=loss/c
 
@@ -319,6 +372,7 @@ class NetWrapper:
             if clipping is not None:  # Clip gradient before updating weights
                 torch.nn.utils.clip_grad_norm_(model.parameters(), clipping)
             optimizer.step()
+            scheduler.step()
 
         return acc_all / len(train_loader.dataset), loss_all / len(train_loader.dataset)
      
@@ -376,15 +430,30 @@ class NetWrapper:
                 output,xx = model(data)
                 if i == 0:
                     Z = output
-                    Y = data.y
+                    y = data.y
                 else:
                     Z = torch.cat((Z, output))
-                    Y = torch.cat((Y, data.y))
+                    y = torch.cat((y, data.y))
+
+            loss =0
+            c = 0
+            #z = Variable(torch.from_numpy(np.array(0))).type(torch.FloatTensor)
+            z = toTensor([0])  
+            for i in range(len(y)-1):
+                for j in range(i+1,len(y)):
+                    if y[i]!=y[j]:
+                        c+=1
+                        dz = Z[i,-1]-Z[j,-1]
+                        dy = y[i]-y[j]                        
+                        loss+=torch.max(z, 1.0-dy*dz)  #1.0 or 0.5?
+                        #loss+=lossfun(zi,zj,dy)
+            loss=loss.item()/c
+
             if not isinstance(Z, tuple):
                 Z = (Z,)
             #loss, acc = self.loss_fun(Y, *Z)
-            loss = 0
-            auc_val = calc_roc_auc(Y, *Z)
+            #loss = 0
+            auc_val = calc_roc_auc(torch.minimum(y,torch.ones(1, dtype=torch.int64).to(self.device)), *Z)
             #pr = calc_pr(Y, *Z)
             return auc_val, loss#, auc, pr
         
@@ -404,11 +473,11 @@ class NetWrapper:
         test_acc_at_best_val_acc = -1
         for epoch in tqdm(range(1, max_epochs+1)):
 
-            if scheduler is not None:
-                scheduler.step(epoch)
+            #if scheduler is not None:
+                #scheduler.step(epoch)
             start = time.time()
             
-            train_acc, train_loss = self._pair_train(train_loader, optimizer, clipping)
+            train_acc, train_loss = self._pair_train(train_loader, optimizer, scheduler, clipping)
             
             end = time.time() - start
             time_per_epoch.append(end)
@@ -529,100 +598,63 @@ def change_pixel(mask,i,j,val):
     else:
         return
 
-def bokeh_plot(G):
-    skip=True
-    data_dict={'core': [], 'ims':[], 'txt': []}
-    url_dict={}
-    txt_dict={}
-    n_dict={'core': [],'x': [],'y': [], 'c': []}
-    e_dict={'core':[],'x0':[],'x1':[],'y0':[],'y1':[]}
-    core_menu=[]
-    for g in G.keys():
-        print(f'processing vis for core: {g}')
-        if g=='4-F':
-            skip=False
-        if skip:
-            print('skipping')
-            continue
-        if g=='6-A':
-            break
-        core_menu.append((f'{g} ({G[g].type_label[0]})',g))
-        Xn = toNumpy(G[g].coords)     # get coordinates
-        Wn= np.array([e for e in toNumpy(G[g].edge_index.t())])
-        c=G[g].c
-        n_dict['c'].extend(c)
-        n_dict['core'].extend([g]*len(Xn))
-        n_dict['x'].extend(Xn[:,0])
-        n_dict['y'].extend(2854-Xn[:,1])
-        e_dict['x0'].extend(Xn[Wn[:,0],0])
-        e_dict['y0'].extend(2854-Xn[Wn[:,0],1])
-        e_dict['x1'].extend(Xn[Wn[:,1],0])
-        e_dict['y1'].extend(2854-Xn[Wn[:,1],1])
-        e_dict['core'].extend([g]*len(Wn))
+def bokeh_plot(g):
 
-        core=g
-        tx=f'core {core}, true label is: {G[g].type_label[0]}, score is: {G[g].z.item()}'
+    Xn = toNumpy(g.coords)     # get coordinates
+    Wn= np.array([e for e in toNumpy(g.edge_index.t())])
+    c=g.c
+    core=g.core[0]
+    print(f'creating vis for core: {core}...')
+    tx=f'core {core}, true label is: {g.type_label}, score is: {g.z.item()}'
 
-        #mask=p.image_url(url=[f'D:\All_masks_inv\{core}.png'],x=0, y=2854, w=2854, h=2854, anchor="top_left", global_alpha=0.35)
-
-        fmask=Image.open(Path(f'D:\All_masks_tiff\{core}.tiff'))
-        im=np.array(fmask, dtype=np.float32)
-        fmask.close()
-        im[im==1]=256
-        im[im==2]=0
-        im=im-1
-        #im=255-im
-        #im_rgba=np.concatenate((np.repeat(im[:,:,None],3,axis=2), 255*np.ones((im.shape[0], im.shape[1],1), dtype=np.uint8)), axis=2)
-        #im_rgb=np.repeat(im[:,:,None],3,axis=2)
-        #I = Image.fromarray(im_rgb).convert("RGBA")
-        #pal=[[1-i/20,i/20,0] for i in range(20)]
-        for i in range(len(Xn)):
-            change_pixel(im, int(Xn[i,1]), int(Xn[i,0]), c[i,0])
-
-        im=np.flipud(im)
-        data_dict['core'].append(g)
-        data_dict['ims'].append(im)
-        data_dict['txt'].append(tx)
-        url_dict[g]=[f'D:\All_cores\{g}.jpg']
-        txt_dict[g]=[tx]
-
-    print('Done!')
-    core1=n_dict['core'][0]
-    p = figure(title='TMA visualisation',x_range=(0,2854), y_range=(0,2854), width=800, height=800)
-    url_ds=ColumnDataSource(data=url_dict)
-    t_ds=ColumnDataSource(data=txt_dict)
-    coreim=p.image_url(url=core1,x=0, y=2854, w=2854, h=2854, anchor="top_left", source=url_ds)
-    im_ds=ColumnDataSource(data=data_dict)
-    e_ds=ColumnDataSource(data=e_dict)
-    n_dict['c']=np.array(n_dict['c'])
-    n_ds=ColumnDataSource(data=n_dict)
-    gf=GroupFilter(column_name='core', group=core1)
-
-    e_view = CDSView(source=e_ds, filters=[gf])
-    n_view = CDSView(source=n_ds, filters=[gf])
-    i_view = CDSView(source=im_ds, filters=[gf])
+    p = figure(title=tx,x_range=(0,2854), y_range=(0,2854), width=800, height=800)
     
+    #mask=p.image_url(url=[f'D:\All_masks_inv\{core}.png'],x=0, y=2854, w=2854, h=2854, anchor="top_left", global_alpha=0.35)
+    
+    with Image.open(Path(f'D:\All_cores\{core}.jpg')) as imfile:
+        blah=np.array(imfile.convert("RGBA"))
+        blah_rgb=blah.view(dtype=np.uint32).reshape(blah.shape[:-1])
+
+    blah_rgb=np.flipud(blah_rgb)
+    #coreim=p.image_url(url=[f'D:\All_cores\{core}.jpg'],x=0, y=2854, w=2854, h=2854, anchor="top_left")
+    coreim=p.image_rgba(image=[blah_rgb],x=0, y=0, dw=2854, dh=2854)
+
+    fmask=Image.open(Path(f'D:\All_masks_tiff\{core}.tiff'))
+    im=np.array(fmask, dtype=np.float32)
+    im[im==1]=256
+    im[im==2]=0
+    im=im-1
+    #im=255-im
+    #im_rgba=np.concatenate((np.repeat(im[:,:,None],3,axis=2), 255*np.ones((im.shape[0], im.shape[1],1), dtype=np.uint8)), axis=2)
+    #im_rgb=np.repeat(im[:,:,None],3,axis=2)
+    #I = Image.fromarray(im_rgb).convert("RGBA")
+    pal=[[1-i/20,i/20,0] for i in range(20)]
+    for i in range(len(Xn)):
+        change_pixel(im, int(Xn[i,1]), int(Xn[i,0]), c[i,0])
+
+    im=np.flipud(im)
+
+    fmask.close()
     cmapper=LinearColorMapper(low=0,high=np.max(im[im<255]), palette='RdYlGn11', low_color=(255,255,255,0))
     #mask=p.image(image=[im],x=0, y=0, dw=2854, dh=2854, global_alpha=0.35, color_mapper=EqHistColorMapper('RdYlGn3'))
-    mask=p.image(image='ims',x=0, y=0, dw=2854, dh=2854, global_alpha=0.45, color_mapper=cmapper, source=im_ds, view=i_view)
+    mask=p.image(image=[im],x=0, y=0, dw=2854, dh=2854, global_alpha=0.45, color_mapper=cmapper)
     #mask=p.image_rgba(image=[np.array(I)],x=0, y=0, dw=2854, dh=2854, global_alpha=0.35)
-    #edges=p.segment(x0=Xn[Wn[:,0],0], y0=2854-Xn[Wn[:,0],1],
-                #x1=Xn[Wn[:,1],0], y1=2854-Xn[Wn[:,1],1],
-                #line_width=0.6)
-    #nodes=p.circle(Xn[:,0],2854-Xn[:,1],color=c)
-    edges=p.segment(x0='x0',y0='y0',x1='x1',y1='y1', line_width=0.6, source=e_ds, view=e_view)
-    nodes=p.circle(x='x',y='y',color='c', source=n_ds, view=n_view)
+    edges=p.segment(x0=Xn[Wn[:,0],0], y0=2854-Xn[Wn[:,0],1],
+                x1=Xn[Wn[:,1],0], y1=2854-Xn[Wn[:,1],1],
+                line_width=0.6)
+    nodes=p.circle(Xn[:,0],2854-Xn[:,1],color=c)
 
     slider = Slider(
         title="Adjust alpha",
         start=0,
         end=1,
-        step=0.1,
+        step=0.05,
         value=0.5
     )
     toggle1 = Toggle(label="Show Mask", button_type="success")
     toggle2 = Toggle(label="Show Lines", button_type="success")
-    drop=Dropdown(label='choose core', button_type='warning', menu=core_menu)
+    toggle3 = Toggle(label="Show Dots", button_type="success")
+    #drop=Dropdown(label='choose core', button_type='warning', menu=[('3-B','3-B'),('3-C','3-C'),('3-D','3-D')])
 
     callback = CustomJS(args=dict(m=mask, s=slider), code="""
 
@@ -644,12 +676,21 @@ def bokeh_plot(G):
     """)
     callback2 = CustomJS(args=dict(e=edges, s=slider), code="""
         if (this.active) {
-            e.glyph.line_alpha = 0;
+            e.visible = false;
         } else {
             e.glyph.line_alpha = s.value;
+            e.visible = true;
         };
     """)
-    slidercb=CustomJS(args=dict(e=edges, m=mask, s=slider, mt=toggle1, et=toggle2, n=nodes), code="""
+    callback3 = CustomJS(args=dict(n=nodes, s=slider), code="""
+        if (this.active) {
+            n.visible = false;
+        } else {
+            n.glyph.line_alpha = s.value;
+            n.visible = true;
+        };
+    """)
+    slidercb=CustomJS(args=dict(e=edges, m=mask, n=nodes, s=slider, mt=toggle1, et=toggle2), code="""
         if (et.active) {
             e.glyph.line_alpha = 0;
         } else {
@@ -660,47 +701,41 @@ def bokeh_plot(G):
         } else {
             m.glyph.global_alpha = s.value;
         };
-        n.glyph.line_alpha=s.value
-        n.glyph.fill_alpha=s.value
+        n.glyph.line_alpha = s.value;
+        n.glyph.fill_alpha = s.value;
 
     """)
 
-    dropcb=CustomJS(args=dict(c=coreim, m=mask, f=gf, ev=e_view, nv=n_view, iv=i_view, eds=e_ds, nds=n_ds, ids=im_ds, cmap=cmapper, p=p, t=t_ds), code=r"""
-        c.glyph.url=c.data_source.data[this.item];
-        p.title.text=t.data[this.item][0];
-        console.log('im is: ' + m.glyph.image)
-        //m.glyph.image={field: this.item, transform: cmap};
-        //cmap.update_data()
-        f.group=this.item;
-        ev.filters=[f];
-        nv.filters=[f];
-        iv.filters=[f];
-        ids.change.emit()
-        eds.change.emit();
-        nds.change.emit();
+    dropcb=CustomJS(args=dict(c=coreim), code="""
+        c.glyph.url=`D:\All_cores\${this.item}.jpg`
     
     """)
 
     #slider.js_link("value", nodes.glyph , "fill_alpha")
-    #slider.js_link("value", nodes.glyph , "line_alpha")
+    slider.js_link("value", nodes.glyph , "line_alpha")
     #slider.js_link("value", edges.glyph , "line_alpha")
     slider.js_on_change('value', slidercb)
 
     toggle1.js_on_click(callback)
     toggle2.js_on_click(callback2)
-    drop.js_on_event('menu_item_click',dropcb)
+    toggle3.js_on_click(callback3)
+    #drop.js_on_event('menu_item_click',dropcb)
 
     # create layout
     gr = layout(
         [
-            [p, [slider, toggle1, toggle2, drop]],
+            [p, [slider, toggle1, toggle2, toggle3]],
         ]
     )
 
     # show result
-    show(gr)
-    print('done plotting')
-    1/0
+    output_file(filename=f"D:/Meso/Bokeh_core_dyn/{core}.html", title="TMA cores graph NN visualisation")
+    save(gr)
+    #show(gr)
+    #html = file_html(gr, CDN, "my plot")
+    #with open('D:/blah.html', 'w') as f:
+        #f.write(html)
+    print('save?')
 
 def plotGraph(Xn, Wn, c=(0,0,0),tt=None,node_size=50,edge_alpha=1.0): 
     """
@@ -760,30 +795,31 @@ def showGraphDataset(G):
         Xp[:,i] = exposure.equalize_hist(Xp[:,i])**2
     Xp[:,1]=1-Xp[:,0]
     
-    #fig, axs = plt.subplots(2, 3)#max(pos,neg))
-    #plt.subplots_adjust(wspace=0, hspace=0)
+    fig, axs = plt.subplots(2, 3)#max(pos,neg))
+    plt.subplots_adjust(wspace=0, hspace=0)
 
-    #counts = [0,0]
+    counts = [0,0]
     for i,g in enumerate(G.keys()):   
         G[g].c = Xp[L[i]:L[i+1]]
-        #y = int(G[g].y)
-        #if counts[y]>=3:
-            #continue 
-        #ax = axs[y,counts[y]]
-        #counts[y]+=1
-        #plt.sca(ax)
-        #showGraph(G[g])
-        #plt.title(toNumpy(G[g].z)[0])
+        y = int(G[g].y)
+        if counts[y]>=3:
+            continue 
+        ax = axs[y,counts[y]]
+        counts[y]+=1
+        plt.sca(ax)
+        showGraph(G[g])
+        plt.title(toNumpy(G[g].z)[0])
     #plt.show()
 
-    #for i,g in enumerate(G.keys()): 
+    for i,g in enumerate(G.keys()): 
         #core=g
         #with Image.open(Path(f'D:\All_cores\{}.jpg')) as img:
             #plt.imshow(img)
             #showGraph(g)
         #coords = toNumpy(G[g].coords)     # get coordinates
         #bokeh_plot(coords,np.array([e for e in toNumpy(G[g].edge_index.t())]),G[g].c,core)
-    bokeh_plot(G)
+        bokeh_plot(G[g])
+        #print('skip')
 
     
 
@@ -798,14 +834,20 @@ def getVisData(data,model,device):
     loader = DataLoader(data)
     model = model.to(device)
     model.eval()
-    Z = []
+    Z, core, lab, all_pred = [],[],[],[]
     with torch.no_grad():
         for i, d in enumerate(loader):
             d = d.to(device)
             output,xx = model(d)
             Z.append(toNumpy(output[0]))
             G[d.core[0]]=Data(x=d.x,v=xx, edge_index=d.edge_index,y=d.y,coords=d.coords,z=output[0],core=d.core, type_label=d.type_label)
-    return G
+            lab.append(d.y.item())
+            core.append(d.core[0])
+            all_pred.append(output[0].item())
+
+    df=pd.DataFrame({'core': core, 'label': lab, 'GNN': all_pred})
+
+    return G, df
 #%%
 def showImageDataset(G):
     X = np.vstack([toNumpy(g.v) for g in G])
@@ -932,60 +974,78 @@ if __name__=='__main__':
     #%% MAIN TRAINING and VALIDATION
        
     #loss_class = MulticlassClassificationLoss
-    learning_rate = 0.001
-    weight_decay =0.001
-    epochs = 300
+    learning_rate = 0.01
+    weight_decay =0.05
+    epochs = 500
     scheduler = None
     from sklearn.model_selection import StratifiedKFold, train_test_split
     skf = StratifiedKFold(n_splits=5,shuffle=True)
-    Vacc,Tacc=[],[]
-    visualize = False
+    #Vacc,Tacc=[],[]
+    visualize = False #'pred'
 
     #added
     dataset,Y, slide=mk_graph()
+    print('made graphs, starting training..')
 
     #for trvi, test in skf.split(dataset, Y):
-    for trvi, test in slide_fold(slide):
-        test_dataset=[dataset[i] for i in test]
-        tt_loader = DataLoader(test_dataset, shuffle=True)
-        
-        train, valid = train_test_split(trvi,test_size=0.2,shuffle=True,stratify=np.array(Y)[trvi])
-        #train,valid = trvi, test
-        sampler = StratifiedSampler(class_vector=torch.from_numpy(np.array(Y)[train]),batch_size = 16)
-        
-          
-        train_dataset=[dataset[i] for i in train]    
-        #tr_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
-        tr_loader = DataLoader(train_dataset, batch_sampler = sampler)
-        valid_dataset=[dataset[i] for i in valid]    
-        v_loader = DataLoader(valid_dataset, shuffle=True)
-    
-        model = GIN(dim_features=dataset[0].x.shape[1], dim_target=1, layers=[5,5,5],dropout = 0.25,pooling='mean',eps=100.0,train_eps=False)
-        net = NetWrapper(model, loss_function=None, device=device)
-        model = model.to(device = net.device)
-        optimizer = optim.Adam(model.parameters(),
-                                lr=learning_rate, weight_decay=weight_decay)
-        
-        #if visualize: showGraphDataset(getVisData(test_dataset,net.model,net.device));#1/0
+    dfs=[]
+    va,ta=[],[]
+    for reps in range(5):
+        Vacc,Tacc=[],[]
+        for trvi, test in slide_fold(slide):
+            test_dataset=[dataset[i] for i in test]
+            tt_loader = DataLoader(test_dataset, shuffle=True)
             
-        best_model,train_loss, train_acc, val_loss, val_acc, tt_loss, tt_acc = net.train(train_loader=tr_loader,
-                                                                   max_epochs=epochs,
-                                                                   optimizer=optimizer, scheduler=scheduler,
-                                                                   clipping=None,
-                                                                   validation_loader=v_loader,
-                                                                   test_loader=tt_loader,
-                                                                   early_stopping=None,
-                                                                   log_every=50,
-                                                                   )
+            train, valid = train_test_split(trvi,test_size=0.25,shuffle=True,stratify=np.array(Y)[trvi])
+            #train,valid = trvi, test
+            sampler = StratifiedSampler(class_vector=torch.from_numpy(np.array(Y)[train]),batch_size = 16)
+            
+            
+            train_dataset=[dataset[i] for i in train]    
+            #tr_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
+            tr_loader = DataLoader(train_dataset, batch_sampler = sampler)
+            valid_dataset=[dataset[i] for i in valid]    
+            v_loader = DataLoader(valid_dataset, shuffle=True)
         
-        Vacc.append(val_acc)
-        Tacc.append(tt_acc)
-        print ("fold complete", len(Vacc),train_acc,val_acc,tt_acc)
+            model = GIN(dim_features=dataset[0].x.shape[1], dim_target=1, layers=[8,8,8,8],dropout = 0.0,pooling='mean',eps=100.0,train_eps=False, do_ls=True)
+            net = NetWrapper(model, loss_function=None, device=device)
+            model = model.to(device = net.device)
+            #optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+            optimizer = optim.SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay, momentum=0.7, nesterov=True)
+            #scheduler = OneCycleLR(optimizer,max_lr=learning_rate, steps_per_epoch=len(tr_loader), epochs=epochs, pct_start=0.25, div_factor=20, final_div_factor=20)
+            scheduler = CyclicLR(optimizer,0.0005,0.005,40*len(tr_loader),cycle_momentum=True)
+
+            #if visualize: showGraphDataset(getVisData(test_dataset,net.model,net.device));#1/0
+                
+            best_model,train_loss, train_acc, val_loss, val_acc, tt_loss, tt_acc = net.train(train_loader=tr_loader,
+                                                                    max_epochs=epochs,
+                                                                    optimizer=optimizer, scheduler=scheduler,
+                                                                    clipping=None,
+                                                                    validation_loader=v_loader,
+                                                                    test_loader=tt_loader,
+                                                                    early_stopping=None,
+                                                                    log_every=50,
+                                                                    )
+            
+            Vacc.append(val_acc)
+            Tacc.append(tt_acc)
+            print ("fold complete", len(Vacc),train_acc,val_acc,tt_acc)
+            if visualize:
+                G, df=getVisData(test_dataset,net.model,net.device)
+                if visualize=='plots':
+                    showGraphDataset(G)
+                dfs.append(df)
+                print('vis')
+
         if visualize:
-            showGraphDataset(getVisData(test_dataset,net.model,net.device))
-            print('vis')
-    print ("avg Valid acc=", np.mean(Vacc),"+/", np.std(Vacc))
-    print ("avg Test acc=", np.mean(Tacc),"+/", np.std(Tacc))
+            pred_df=pd.concat(dfs,axis=0,ignore_index=True)
+            pred_df.to_csv(Path(r'D:\Results\TMA_results\GNN_class_temp.csv'), index=False)
+        print ("avg Valid acc=", np.mean(Vacc),"+/", np.std(Vacc))
+        print ("avg Test acc=", np.mean(Tacc),"+/", np.std(Tacc))
+        va.append(np.mean(Vacc))
+        ta.append(np.mean(Tacc))
+    print(f'val accs were: {va}')
+    print(f'test accs were: {ta}')
     
     
         
