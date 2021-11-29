@@ -6,7 +6,9 @@ Multiple Instance Graph Classification
 
 from bokeh.core.enums import Palette
 from bokeh.models.mappers import ColorMapper, LinearColorMapper
-from mk_graph import mk_graph, slide_fold
+from bokeh.models.sources import ColumnDataSource
+from bokeh.models.widgets.markups import Div
+from mk_graph import USE_CUDA, mk_graph, slide_fold
 import numpy as np
 import matplotlib.pyplot as plt
 import torch.nn as nn
@@ -32,14 +34,18 @@ from PIL import Image
 from pathlib import Path
 from bokeh.plotting import figure, show, output_file, save
 from bokeh.layouts import layout
-from bokeh.models import Slider, Toggle, Dropdown
+from bokeh.transform import linear_cmap
+from bokeh.models import Slider, Toggle, Dropdown, PreText
 from bokeh.models.callbacks import CustomJS
+from bokeh.palettes import RdYlGn11
 #from wasabi import change_pixel
 from bokeh.models.mappers import EqHistColorMapper
 from bokeh.embed import file_html
 from bokeh.resources import CDN
 import pandas as pd
 import sys
+from sklearn.feature_selection import SelectKBest
+from sklearn.feature_selection import chi2, mutual_info_regression, f_regression
 
 output_file(filename="D:/Meso/TMA_vis_temp.html", title="TMA cores graph NN visualisation")
 sys.setrecursionlimit(10**4)
@@ -185,6 +191,16 @@ def calc_roc_auc(target, prediction):
     # import pdb;pdb.set_trace()
     # return roc_auc
 
+class alpha_scaler():
+    def __init__(self, alpha, step_size) -> None:
+        self.alpha=alpha
+        self.step_size=step_size
+    
+    def update_alpha(self):
+        if self.alpha+self.step_size<1:
+            self.alpha+=self.step_size
+        
+
 class learnable_sig(torch.nn.Module):
     def __init__(self, fsize) -> None:
         super(learnable_sig,self).__init__()
@@ -198,9 +214,9 @@ class learnable_sig(torch.nn.Module):
     def forward(self,x,xcore,batch):
         y=[]
         for i in torch.unique(batch):
-            last_ind=torch.sum(batch<=i)-1
+            #last_ind=torch.sum(batch<=i)-1
             #y.append(torch.sigmoid(x[batch==i]*self.alpha-self.beta+self.gamma*torch.mean(x[batch==i]))-0.5)
-            y.append(torch.sigmoid(x[batch==i]*self.alpha-self.l1(xcore.T[:,i]))-0.5)
+            y.append(torch.sigmoid(x[batch==i,:]*self.alpha-self.l1(xcore.T[:,i])))
         return torch.cat(y)
 
 class GIN(torch.nn.Module):
@@ -209,9 +225,7 @@ class GIN(torch.nn.Module):
         self.dropout = dropout
         self.embeddings_dim=layers
         self.do_ls=do_ls
-        if do_ls:
-            #self.ls=learnable_sig(dim_features)
-            self.ls=learnable_sig(np.sum(layers))
+        
         self.no_layers = len(self.embeddings_dim)
         self.first_h = []
         self.nns = []
@@ -221,6 +235,10 @@ class GIN(torch.nn.Module):
              'PAN': PANPooling(in_channels=1, ratio=0.5), 'topN': global_sort_pool}[pooling]
         self.ecnns = []
         self.ecs = []
+        self.dim_features=dim_features
+        self.subE=self.make_subnet()
+        self.subS=self.make_subnet()
+        
         #train_eps = True#config['train_eps']
 
         # TOTAL NUMBER OF PARAMETERS #
@@ -230,41 +248,52 @@ class GIN(torch.nn.Module):
 
         # -------------------------- #
 
+    def make_subnet(self):
+        ecnns = []
+        ecs = []
+        linears=[]
         for layer, out_emb_dim in enumerate(self.embeddings_dim):
 
             if layer == 0:
-                self.first_h = Sequential(Linear(dim_features, out_emb_dim), BatchNorm1d(out_emb_dim), ReLU(),
+                first_h = Sequential(Linear(self.dim_features, out_emb_dim), BatchNorm1d(out_emb_dim), ReLU(),
                                     Linear(out_emb_dim, out_emb_dim), BatchNorm1d(out_emb_dim), ReLU())
                 #self.first_h=PANConv(dim_features, out_emb_dim,5)
                 #self.linears.append(Linear(dim_features, dim_target))
-                self.linears.append(Linear(out_emb_dim, dim_target))
+                linears.append(Linear(out_emb_dim, 1))
             else:
                 input_emb_dim = self.embeddings_dim[layer-1]
                 # self.nns.append(Sequential(Linear(input_emb_dim, out_emb_dim), BatchNorm1d(out_emb_dim), ReLU(),
                 #                       Linear(out_emb_dim, out_emb_dim), BatchNorm1d(out_emb_dim), ReLU()))
                 #self.convs.append(GINConv(self.nns[-1], eps=eps, train_eps=train_eps))  # Eq. 4.2
 
-                self.linears.append(Linear(out_emb_dim, dim_target))
+                linears.append(Linear(out_emb_dim, 1))
                 
                 subnet = Sequential(Linear(2*input_emb_dim, out_emb_dim), BatchNorm1d(out_emb_dim), ReLU(),
                                       Linear(out_emb_dim, out_emb_dim), BatchNorm1d(out_emb_dim), ReLU())
                 
-                self.ecnns.append(subnet)
+                ecnns.append(subnet)
                 
-                self.ecs.append(EdgeConv(self.ecnns[-1],aggr='mean'))#DynamicEdgeConv#EdgeConv
+                ecs.append(EdgeConv(ecnns[-1],aggr='mean'))#DynamicEdgeConv#EdgeConv
+                #ecs.append(GINConv(ecnns[-1]))
                 #self.ecs.append(DynamicEdgeConv(self.ecnns[-1],k=10,aggr='mean',num_workers=8))
 
         #self.first_h = torch.nn.ModuleList(self.first_h)
         #self.nns = torch.nn.ModuleList(self.nns)
         #self.convs = torch.nn.ModuleList(self.convs)
-        self.linears = torch.nn.ModuleList(self.linears)  # has got one more for initial input
+        linears = torch.nn.ModuleList(linears)  # has got one more for initial input
         
-        self.ecnns = torch.nn.ModuleList(self.ecnns)
-        self.ecs = torch.nn.ModuleList(self.ecs)
+        ecnns = torch.nn.ModuleList(ecnns)
+        ecs = torch.nn.ModuleList(ecs)
+        if self.do_ls:
+            ls=learnable_sig(self.dim_features)
+            #ls=learnable_sig(np.sum(self.embeddings_dim))
+
+        sub_graph=nn.ModuleDict({'first': first_h, 'linears': linears, 'ecnns': ecnns, 'ecs':ecs, 'ls': ls})
+        return sub_graph
         
         
 
-    def forward(self, data):
+    def forward_sub(self, sub, data):
         # Implement Equation 4.2 of the paper i.e. concat all layers' graph representations and apply linear model
         # note: this can be decomposed in one smaller linear model per layer
         xfeat, edge_index, batch = data.x, data.edge_index, data.batch
@@ -282,10 +311,10 @@ class GIN(torch.nn.Module):
             # print(f'Forward: layer {l}')
             if layer == 0:
                 #x, M = self.first_h(x, edge_index)
-                x = self.first_h(xfeat)
+                x = sub['first'](xfeat)
                 if self.do_ls:
                     core_x.append(x[last_ind,:])
-                z = self.linears[layer](x)
+                z = sub['linears'][layer](x)
                 Z+=z
                 #dout = F.dropout(pooling(z, batch), p=self.dropout, training=self.training)
                 #dout = F.dropout(torch.mean(pooling(z, batch, 1000),dim=1,keepdim=True), p=self.dropout, training=self.training)
@@ -296,11 +325,11 @@ class GIN(torch.nn.Module):
                 # Layer l ("convolution" layer)
                 # import pdb;pdb.set_trace()
                 #x = self.convs[layer-1](x, edge_index)
-                x = self.ecs[layer-1](x,edge_index)
+                x = sub['ecs'][layer-1](x,edge_index)
                 if self.do_ls:
                     core_x.append(x[last_ind,:])
                 #x = self.ecs[layer-1](x,batch)
-                z = self.linears[layer](x)
+                z = sub['linears'][layer](x)
                 Z+=z
                 #dout=pooling(z, M, batch)
                 #dout = F.dropout(torch.mean(pooling(z, batch, 1000),dim=1,keepdim=True), p=self.dropout, training=self.training)
@@ -309,17 +338,28 @@ class GIN(torch.nn.Module):
 
         if self.do_ls:
             core_x=torch.cat(core_x,dim=1)    
-            ZZ=self.ls(Z,core_x,batch)   #ZZ=self.ls(Z,xfeat,batch)
+            #ZZ=self.ls(Z,core_x.detach(),batch)    #learn based on embed
+            ZZ=sub['ls'](Z,xfeat[last_ind,:],batch)   #learn sig thresh based on base feats
             out=pooling(ZZ, batch)
             return out,ZZ
         else:
             out=pooling(Z, batch)
             return out,Z
+
+    def forward(self, data):
+        core_outE, cell_outE=self.forward_sub(self.subE, data)
+        core_outS, cell_outS=self.forward_sub(self.subS, data)
+
+        core_out=torch.cat([core_outE,core_outS],dim=1)
+        cell_out=torch.cat([cell_outE,cell_outS],dim=1)
+
+        return core_out, cell_out
     
    
 class NetWrapper:
     def __init__(self, model, loss_function, device='cpu', classification=True):
         self.model = model
+        self.scaler=alpha_scaler(0,0.01)
         self.loss_fun = loss_function
         self.device = torch.device(device)
         self.classification = classification
@@ -351,11 +391,18 @@ class NetWrapper:
                 for j in range(i+1,len(y)):
                     if y[i]!=y[j]:
                         c+=1
-                        dz = output[i,-1]-output[j,-1]
-                        dy = y[i]-y[j]                        
-                        loss+=torch.max(z, 1.0-dy*dz)  #1.0 or 0.5?
+                        dz = output[i,:]-output[j,:]
+                        dy = torch.stack([y[j]-y[i],y[i]-y[j]])                       
+                        loss+=torch.mean(torch.max(z, 1.0-dy*dz))  #1.0 or 0.5?
                         #loss+=lossfun(zi,zj,dy)
             loss=loss/c
+            #extra loss component to penalise cells being both ep and sarc, also may
+            #act as a regularisation
+            #loss_reg=torch.mean(xx)
+            #loss_es=torch.mean(torch.prod(xx,dim=1)**2)
+            loss_es=torch.mean(torch.max(toTensor(0.0).to(device),torch.prod(xx+toTensor(-0.1).to(device),dim=1))**2)
+            loss=loss+0.5*self.scaler.alpha*loss_es#+0.5*loss_reg
+            #loss=loss+0.5*loss_reg
 
             acc = loss
             loss.backward()
@@ -443,17 +490,17 @@ class NetWrapper:
                 for j in range(i+1,len(y)):
                     if y[i]!=y[j]:
                         c+=1
-                        dz = Z[i,-1]-Z[j,-1]
-                        dy = y[i]-y[j]                        
-                        loss+=torch.max(z, 1.0-dy*dz)  #1.0 or 0.5?
+                        dz = Z[i,:]-Z[j,:]
+                        dy = torch.stack([y[j]-y[i],y[i]-y[j]])                       
+                        loss+=torch.mean(torch.max(z, 1.0-dy*dz))
                         #loss+=lossfun(zi,zj,dy)
             loss=loss.item()/c
 
-            if not isinstance(Z, tuple):
-                Z = (Z,)
+            #if not isinstance(Z, tuple):
+            #    Z = (Z,)
             #loss, acc = self.loss_fun(Y, *Z)
             #loss = 0
-            auc_val = calc_roc_auc(torch.minimum(y,torch.ones(1, dtype=torch.int64).to(self.device)), *Z)
+            auc_val = calc_roc_auc(torch.minimum(y,torch.ones(1, dtype=torch.int64).to(self.device)), torch.unsqueeze(Z[:,-1]/(Z[:,0]+0.00001),1))
             #pr = calc_pr(Y, *Z)
             return auc_val, loss#, auc, pr
         
@@ -494,6 +541,7 @@ class NetWrapper:
                 print('\n'+msg)   
                 
             self.history.append(train_loss)
+            self.scaler.update_alpha()
             
             if val_acc>=best_val_acc:
                 best_val_acc = val_acc
@@ -580,8 +628,15 @@ def genBags(y):
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 import networkx as nx
 #import umap
-from skimage import exposure
+#from skimage import exposure
 from sklearn.decomposition  import PCA
+def sort_feats(xdf, feat_names, stat=mutual_info_regression):
+    feat_sel=SelectKBest(stat, k=20)
+    feat_sel.fit(xdf[feat_names].values,xdf['score'].values)
+    f_scores=feat_sel.scores_
+    inds=np.argsort(f_scores)
+    sort_feats=np.flip(feat_names[inds])
+    return list(sort_feats)
 
 def change_pixel(mask,i,j,val):
     if val==255:
@@ -602,12 +657,14 @@ def bokeh_plot(g):
 
     Xn = toNumpy(g.coords)     # get coordinates
     Wn= np.array([e for e in toNumpy(g.edge_index.t())])
+    xdf=pd.DataFrame(toNumpy(g.x),columns=g.feat_names[0])
     c=g.c
     core=g.core[0]
+    feat_names=pd.Index(g.feat_names[0])
     print(f'creating vis for core: {core}...')
-    tx=f'core {core}, true label is: {g.type_label}, score is: {g.z.item()}'
+    tx=f'core {core}, true label is: {g.type_label}, score is: {g.z[1].item()/(g.z[0].item()+0.00001)}'
 
-    p = figure(title=tx,x_range=(0,2854), y_range=(0,2854), width=800, height=800)
+    p = figure(title=tx,x_range=(0,2854), y_range=(0,2854), width=900, height=900)
     
     #mask=p.image_url(url=[f'D:\All_masks_inv\{core}.png'],x=0, y=2854, w=2854, h=2854, anchor="top_left", global_alpha=0.35)
     
@@ -629,20 +686,51 @@ def bokeh_plot(g):
     #im_rgb=np.repeat(im[:,:,None],3,axis=2)
     #I = Image.fromarray(im_rgb).convert("RGBA")
     pal=[[1-i/20,i/20,0] for i in range(20)]
+    cvals=[]
     for i in range(len(Xn)):
-        change_pixel(im, int(Xn[i,1]), int(Xn[i,0]), c[i,0])
+        cvals.append(0.5+(c[i,0]**2-c[i,1]**2)/2)
+        if c[i,0]<0.4 and c[i,1]<0.4:
+            cval=101
+        else:
+            cval=cvals[-1]
+        change_pixel(im, int(Xn[i,1]), int(Xn[i,0]), cval)
 
+    xdf['score']=cvals
+    xdf['ep_score']=c[:,1]
+    xdf['s_score']=c[:,0]
+    xdf['x']=Xn[:,0]
+    xdf['y']=2854-Xn[:,1]
+    sorted_feats=sort_feats(xdf, feat_names, mutual_info_regression)
+    sorted_feats.extend(['ep_score','s_score'])
+    
     im=np.flipud(im)
-
     fmask.close()
-    cmapper=LinearColorMapper(low=0,high=np.max(im[im<255]), palette='RdYlGn11', low_color=(255,255,255,0))
+    #cmapper=LinearColorMapper(low=0,high=np.max(im[im<255]), palette='RdYlGn11', low_color=(255,255,255,0))
+    
+    highv=np.max(im[im<100])
+    lowv=np.min(im[im>=0])
+    mdiff=np.maximum(highv-0.5,0.5-lowv)
+    mdiff=np.maximum(mdiff,0.4)
+    lowv,highv=0.5-mdiff,0.5+mdiff
+    fds=ColumnDataSource(xdf)
+
+    cmapper=LinearColorMapper(low=lowv,high=highv, palette='RdYlGn11', high_color=(255,255,255,1) ,low_color=(255,255,255,0))
+    drop_ehist_mapper=EqHistColorMapper(low=lowv,high=highv, palette='RdYlGn11', high_color=(255,255,255,1) ,low_color=(255,255,255,0))
+    drop_lin_mapper=LinearColorMapper(low=lowv,high=highv, palette='RdYlGn11', high_color=(255,255,255,1) ,low_color=(255,255,255,0))
+    circ_cmapper=linear_cmap(field_name='score', palette='RdYlGn11' ,low=0 ,high=1, high_color=(255,255,255,1) ,low_color=(255,255,255,0))
     #mask=p.image(image=[im],x=0, y=0, dw=2854, dh=2854, global_alpha=0.35, color_mapper=EqHistColorMapper('RdYlGn3'))
     mask=p.image(image=[im],x=0, y=0, dw=2854, dh=2854, global_alpha=0.45, color_mapper=cmapper)
     #mask=p.image_rgba(image=[np.array(I)],x=0, y=0, dw=2854, dh=2854, global_alpha=0.35)
     edges=p.segment(x0=Xn[Wn[:,0],0], y0=2854-Xn[Wn[:,0],1],
                 x1=Xn[Wn[:,1],0], y1=2854-Xn[Wn[:,1],1],
                 line_width=0.6)
-    nodes=p.circle(Xn[:,0],2854-Xn[:,1],color=c)
+    nodes=p.circle(x='x',y='y',color=circ_cmapper,source=fds, radius=3.5)
+
+    menu = list(zip(sorted_feats,sorted_feats))
+    drop_i = Dropdown(label="Select Feat (inf)", button_type="warning", menu=menu)
+    sorted_feats=sort_feats(xdf, feat_names, f_regression)
+    menu = list(zip(sorted_feats,sorted_feats))
+    drop_f = Dropdown(label="Select Feat (f1)", button_type="warning", menu=menu)
 
     slider = Slider(
         title="Adjust alpha",
@@ -654,6 +742,8 @@ def bokeh_plot(g):
     toggle1 = Toggle(label="Show Mask", button_type="success")
     toggle2 = Toggle(label="Show Lines", button_type="success")
     toggle3 = Toggle(label="Show Dots", button_type="success")
+    div = Div(text="""dots: score""",
+        width=300, height=60)
     #drop=Dropdown(label='choose core', button_type='warning', menu=[('3-B','3-B'),('3-C','3-C'),('3-D','3-D')])
 
     callback = CustomJS(args=dict(m=mask, s=slider), code="""
@@ -706,10 +796,34 @@ def bokeh_plot(g):
 
     """)
 
-    dropcb=CustomJS(args=dict(c=coreim), code="""
-        c.glyph.url=`D:\All_cores\${this.item}.jpg`
-    
+    #dropcb=CustomJS(args=dict(c=coreim), code="""
+    #    c.glyph.url=`D:\All_cores\${this.item}.jpg`
+    #
+    #""")
+
+    dropcb=CustomJS(args=dict(c=circ_cmapper, ehm=drop_ehist_mapper, lm=drop_lin_mapper, n=nodes,ds=fds, pal=RdYlGn11, p=div), code=r"""
+        var low = Math.min.apply(Math,ds.data[this.item]);
+        var high = Math.max.apply(Math,ds.data[this.item]);
+        this.label=this.item
+        p.text='dots:'+this.item
+        console.log(this.item)
+        c.field_name=this.item
+        //var color_mapper = new Bokeh.LinearColorMapper({palette:pal, low:0, high:1});
+        c.transform.update_data()
+        if (this.item == 'ep_score' || this.item=='s_score') {
+            var cm=lm
+        }
+        else {
+            var cm=ehm
+        }
+        cm.low=low
+        cm.high=high
+        n.glyph.color = {field: this.item, transform: cm};
+        n.glyph.fill_color = {field: this.item, transform: cm};
+        n.glyph.line_color = {field: this.item, transform: cm};
+        ds.change.emit();
     """)
+    #<script type="text/javascript" src="https://cdn.bokeh.org/bokeh/dev/bokeh-api-3.0.0dev1.min.js"></script>
 
     #slider.js_link("value", nodes.glyph , "fill_alpha")
     slider.js_link("value", nodes.glyph , "line_alpha")
@@ -719,17 +833,18 @@ def bokeh_plot(g):
     toggle1.js_on_click(callback)
     toggle2.js_on_click(callback2)
     toggle3.js_on_click(callback3)
-    #drop.js_on_event('menu_item_click',dropcb)
+    drop_i.js_on_event('menu_item_click',dropcb)
+    drop_f.js_on_event('menu_item_click',dropcb)
 
     # create layout
     gr = layout(
         [
-            [p, [slider, toggle1, toggle2, toggle3]],
+            [p, [slider, toggle1, toggle2, toggle3, drop_i, drop_f, div]],
         ]
     )
 
     # show result
-    output_file(filename=f"D:/Meso/Bokeh_core_dyn/{core}.html", title="TMA cores graph NN visualisation")
+    output_file(filename=f"D:/Meso/Bokeh_core_split/{core}_{g.type_label[0]}.html", title="TMA cores graph NN visualisation")
     save(gr)
     #show(gr)
     #html = file_html(gr, CDN, "my plot")
@@ -778,37 +893,42 @@ def showGraphDataset(G):
     Y = [G[g].y for g in G.keys()]
     pos = np.sum([toNumpy(G[g].y)==1 for g in G.keys()])
     neg = len(G)-pos
+    if False:
+        X=(X[:,1]-X[:,0]).reshape(-1,1)
+        
+        
+        #import pdb;pdb.set_trace()
+        X = StandardScaler().fit_transform(X)
+        if X.shape[1]>3:        
+            tx = PCA()#umap.UMAP(n_components=3,n_neighbors=6,min_dist = 0.0)#
+            Xp = tx.fit_transform(X)[:,[0,1,2]]
+        else:
+            Xp = np.zeros((X.shape[0],3))
+            Xp[:,:X.shape[1]]=X
+        Xp = MinMaxScaler().fit_transform(Xp)#[:,[0,1,2]]  
+        
+        #import pdb;pdb.set_trace()
+        for i in range(X.shape[1]):
+            Xp[:,i] = exposure.equalize_hist(Xp[:,i])**2
+        Xp[:,1]=1-Xp[:,0]
     
-    
-    #import pdb;pdb.set_trace()
-    X = StandardScaler().fit_transform(X)
-    if X.shape[1]>3:        
-        tx = PCA()#umap.UMAP(n_components=3,n_neighbors=6,min_dist = 0.0)#
-        Xp = tx.fit_transform(X)[:,[0,1,2]]
+        #fig, axs = plt.subplots(2, 3)#max(pos,neg))
+        #plt.subplots_adjust(wspace=0, hspace=0)
     else:
         Xp = np.zeros((X.shape[0],3))
-        Xp[:,:X.shape[1]]=X
-    Xp = MinMaxScaler().fit_transform(Xp)#[:,[0,1,2]]  
-    
-    #import pdb;pdb.set_trace()
-    for i in range(X.shape[1]):
-        Xp[:,i] = exposure.equalize_hist(Xp[:,i])**2
-    Xp[:,1]=1-Xp[:,0]
-    
-    fig, axs = plt.subplots(2, 3)#max(pos,neg))
-    plt.subplots_adjust(wspace=0, hspace=0)
+        Xp[:,[1,0]]=X
 
     counts = [0,0]
     for i,g in enumerate(G.keys()):   
         G[g].c = Xp[L[i]:L[i+1]]
-        y = int(G[g].y)
-        if counts[y]>=3:
-            continue 
-        ax = axs[y,counts[y]]
-        counts[y]+=1
-        plt.sca(ax)
-        showGraph(G[g])
-        plt.title(toNumpy(G[g].z)[0])
+        #y = int(G[g].y)
+        #if counts[y]>=3:
+        #    continue 
+        #ax = axs[y,counts[y]]
+        #counts[y]+=1
+        #plt.sca(ax)
+        #showGraph(G[g])
+        #plt.title(toNumpy(G[g].z)[0])
     #plt.show()
 
     for i,g in enumerate(G.keys()): 
@@ -840,10 +960,10 @@ def getVisData(data,model,device):
             d = d.to(device)
             output,xx = model(d)
             Z.append(toNumpy(output[0]))
-            G[d.core[0]]=Data(x=d.x,v=xx, edge_index=d.edge_index,y=d.y,coords=d.coords,z=output[0],core=d.core, type_label=d.type_label)
+            G[d.core[0]]=Data(x=d.x,v=xx, edge_index=d.edge_index,y=d.y,coords=d.coords,z=output[0],core=d.core, type_label=d.type_label,feat_names=d.feat_names)
             lab.append(d.y.item())
             core.append(d.core[0])
-            all_pred.append(output[0].item())
+            all_pred.append((output[0,1]/output[0,0]+0.00001).item())
 
     df=pd.DataFrame({'core': core, 'label': lab, 'GNN': all_pred})
 
@@ -974,14 +1094,14 @@ if __name__=='__main__':
     #%% MAIN TRAINING and VALIDATION
        
     #loss_class = MulticlassClassificationLoss
-    learning_rate = 0.01
-    weight_decay =0.05
+    learning_rate = 0.00025
+    weight_decay =0.1
     epochs = 500
     scheduler = None
     from sklearn.model_selection import StratifiedKFold, train_test_split
     skf = StratifiedKFold(n_splits=5,shuffle=True)
     #Vacc,Tacc=[],[]
-    visualize = False #'pred'
+    visualize = 'plots' #'plots' #'pred'
 
     #added
     dataset,Y, slide=mk_graph()
@@ -1010,10 +1130,10 @@ if __name__=='__main__':
             model = GIN(dim_features=dataset[0].x.shape[1], dim_target=1, layers=[8,8,8,8],dropout = 0.0,pooling='mean',eps=100.0,train_eps=False, do_ls=True)
             net = NetWrapper(model, loss_function=None, device=device)
             model = model.to(device = net.device)
-            #optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-            optimizer = optim.SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay, momentum=0.7, nesterov=True)
+            optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+            #optimizer = optim.SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay, momentum=0.7, nesterov=True)
             #scheduler = OneCycleLR(optimizer,max_lr=learning_rate, steps_per_epoch=len(tr_loader), epochs=epochs, pct_start=0.25, div_factor=20, final_div_factor=20)
-            scheduler = CyclicLR(optimizer,0.0005,0.005,40*len(tr_loader),cycle_momentum=True)
+            scheduler = CyclicLR(optimizer,learning_rate,5*learning_rate,40*len(tr_loader),mode='exp_range',gamma=0.8,cycle_momentum=False)
 
             #if visualize: showGraphDataset(getVisData(test_dataset,net.model,net.device));#1/0
                 
@@ -1030,7 +1150,7 @@ if __name__=='__main__':
             Vacc.append(val_acc)
             Tacc.append(tt_acc)
             print ("fold complete", len(Vacc),train_acc,val_acc,tt_acc)
-            if visualize:
+            if visualize and reps==0:
                 G, df=getVisData(test_dataset,net.model,net.device)
                 if visualize=='plots':
                     showGraphDataset(G)

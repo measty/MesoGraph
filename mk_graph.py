@@ -24,8 +24,8 @@ def toGeometricWW(X,W,y,tt=0):
 def connectClusters(C,w=[],core_node=False,dthresh = 3000):
     
     if len(w)==0:
-        W =  NearestNeighbors(radius=40).fit(C).radius_neighbors_graph(C).todense()
-        #W =  NearestNeighbors(n_neighbors=8).fit(C).kneighbors_graph(C).todense()
+        W =  NearestNeighbors(radius=35).fit(C).radius_neighbors_graph(C).todense()
+        #W =  NearestNeighbors(n_neighbors=10).fit(C).kneighbors_graph(C).todense()
     else:
         #dist = DistanceMetric.get_metric('wminkowski', p=2, w=w)
         r=(20/500)*0.5
@@ -90,7 +90,7 @@ def mk_graph():
     columns=df.columns
     to_use=columns[7:-2]
     #to_use=[col for col in to_use if 'Circularity' not in col]
-    #to_use=[col for col in to_use if 'diameter' not in col]
+    to_use=[col for col in to_use if 'diameter' not in col]
     to_use=[col for col in to_use if 'Length' not in col]
     to_use=[col for col in to_use if 'Delaunay' not in col]
     #to_use.append('Nucleus: Circularity')
@@ -100,6 +100,7 @@ def mk_graph():
     #to_use.append('Smoothed: 50 µm: Nearby detection counts')
     #to_use=[col for col in to_use if 'Cell' not in col]
     #to_use=[col for col in to_use if 'Cytoplasm' not in col]
+    #to_use=[col for col in to_use if 'Diameter' not in col]
     '''to_use=['Nucleus: Circularity',
         'Nucleus: Area µm^2',
         'Hematoxylin: Nucleus: Mean',
@@ -154,6 +155,7 @@ def mk_graph():
         g.core=df.Parent.iloc[0]
         g.type_label=df.label.iloc[0]
         g.coords = toTensor(set_core_origin(df[['Centroid X µm','Centroid Y µm']].to_numpy(),g.core,core_cents, core_node))
+        g.feat_names=to_use
         graphs.append(g)
         print(f'Done graph for core {g.core}')
 
