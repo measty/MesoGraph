@@ -24,8 +24,8 @@ def toGeometricWW(X,W,y,tt=0):
 def connectClusters(C,w=[],core_node=False,dthresh = 3000):
     
     if len(w)==0:
-        W =  NearestNeighbors(radius=35).fit(C).radius_neighbors_graph(C).todense()
-        #W =  NearestNeighbors(n_neighbors=10).fit(C).kneighbors_graph(C).todense()
+        W =  NearestNeighbors(radius=40).fit(C).radius_neighbors_graph(C).todense()
+        #W =  NearestNeighbors(n_neighbors=5).fit(C).kneighbors_graph(C).todense()
     else:
         #dist = DistanceMetric.get_metric('wminkowski', p=2, w=w)
         r=(20/500)*0.5
@@ -85,7 +85,10 @@ def mk_graph():
     det_list=list(p.glob('*.csv'))
     df=pd.read_csv(det_list[0])
     core_cents=pd.read_csv(Path('D:\QuPath_Projects\Meso_TMA\Dearrayed\core_cents.csv'))
+    JL_labels=pd.read_csv(Path('D:\Meso\JL_labels.csv'))
     core_node=True
+    keep_level=1
+    use_JL=True
 
     columns=df.columns
     to_use=columns[7:-2]
@@ -94,13 +97,15 @@ def mk_graph():
     to_use=[col for col in to_use if 'Length' not in col]
     to_use=[col for col in to_use if 'Delaunay' not in col]
     #to_use.append('Nucleus: Circularity')
+    to_use=[col for col in to_use if 'Detection probability' not in col]
     #to_use=[col for col in to_use if 'Smoothed' not in col]
-    #to_use=[col for col in to_use if 'Median' not in col]
+    to_use=[col for col in to_use if 'Median' not in col]
     #to_use=[col for col in to_use if 'Cluster' not in col]
     #to_use.append('Smoothed: 50 µm: Nearby detection counts')
     #to_use=[col for col in to_use if 'Cell' not in col]
     #to_use=[col for col in to_use if 'Cytoplasm' not in col]
     #to_use=[col for col in to_use if 'Diameter' not in col]
+    #to_use=[col for col in to_use if 'Haralick' not in col]
     '''to_use=['Nucleus: Circularity',
         'Nucleus: Area µm^2',
         'Hematoxylin: Nucleus: Mean',
@@ -123,13 +128,15 @@ def mk_graph():
     pres=pd.read_csv(Path('D:\All_cores\core_labels_pres.csv'))
     graphs,Y=[],[]
     for df in dfs:
-        if df.Parent.iloc[0] not in pres.Core.values:
+        if (df.Parent.iloc[0] not in pres.Core.values) or pres[pres.Core==df.Parent.iloc[0]].Quality.values[0]>keep_level:
             continue
         df=df[['Parent','Centroid X µm','Centroid Y µm']+to_use+['label']].dropna()
         slide.append(map_ind(df.Parent.iloc[0]))
         X_xy=df[['Centroid X µm','Centroid Y µm']].to_numpy()/500
 
-        #df=df[]
+        if use_JL and df.Parent.iloc[0] in JL_labels.Core.values:
+            df.label.iloc[0]=JL_labels[JL_labels.Core==df.Parent.iloc[0]].JL.values[0]
+
         X=norm.transform(df[to_use].to_numpy())
         if core_node:
             #add virtual node feats as mean of core
@@ -154,8 +161,8 @@ def mk_graph():
         g=toGeometricWW(X,W,y)
         g.core=df.Parent.iloc[0]
         g.type_label=df.label.iloc[0]
-        g.coords = toTensor(set_core_origin(df[['Centroid X µm','Centroid Y µm']].to_numpy(),g.core,core_cents, core_node))
         g.feat_names=to_use
+        g.coords = toTensor(set_core_origin(df[['Centroid X µm','Centroid Y µm']].to_numpy(),g.core,core_cents, core_node))
         graphs.append(g)
         print(f'Done graph for core {g.core}')
 

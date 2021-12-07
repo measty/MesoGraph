@@ -268,13 +268,13 @@ class GIN(torch.nn.Module):
 
                 linears.append(Linear(out_emb_dim, 1))
                 
-                subnet = Sequential(Linear(2*input_emb_dim, out_emb_dim), BatchNorm1d(out_emb_dim), ReLU(),
+                subnet = Sequential(Linear(1*input_emb_dim, out_emb_dim), BatchNorm1d(out_emb_dim), ReLU(),
                                       Linear(out_emb_dim, out_emb_dim), BatchNorm1d(out_emb_dim), ReLU())
                 
                 ecnns.append(subnet)
                 
-                ecs.append(EdgeConv(ecnns[-1],aggr='mean'))#DynamicEdgeConv#EdgeConv
-                #ecs.append(GINConv(ecnns[-1]))
+                #ecs.append(EdgeConv(ecnns[-1],aggr='mean'))#DynamicEdgeConv#EdgeConv
+                ecs.append(GINConv(ecnns[-1]))
                 #self.ecs.append(DynamicEdgeConv(self.ecnns[-1],k=10,aggr='mean',num_workers=8))
 
         #self.first_h = torch.nn.ModuleList(self.first_h)
@@ -359,7 +359,7 @@ class GIN(torch.nn.Module):
 class NetWrapper:
     def __init__(self, model, loss_function, device='cpu', classification=True):
         self.model = model
-        self.scaler=alpha_scaler(0,0.01)
+        self.scaler=alpha_scaler(0,0.005)
         self.loss_fun = loss_function
         self.device = torch.device(device)
         self.classification = classification
@@ -400,8 +400,8 @@ class NetWrapper:
             #act as a regularisation
             #loss_reg=torch.mean(xx)
             #loss_es=torch.mean(torch.prod(xx,dim=1)**2)
-            loss_es=torch.mean(torch.max(toTensor(0.0).to(device),torch.prod(xx+toTensor(-0.1).to(device),dim=1))**2)
-            loss=loss+0.5*self.scaler.alpha*loss_es#+0.5*loss_reg
+            #loss_es=torch.mean(torch.max(toTensor(0.0).to(device),torch.prod(xx+toTensor(-0.1).to(device),dim=1))**2)
+            #loss=loss+0.1*self.scaler.alpha*loss_es#+0.5*loss_reg
             #loss=loss+0.5*loss_reg
 
             acc = loss
@@ -1094,7 +1094,7 @@ if __name__=='__main__':
     #%% MAIN TRAINING and VALIDATION
        
     #loss_class = MulticlassClassificationLoss
-    learning_rate = 0.00025
+    learning_rate = 0.0001
     weight_decay =0.1
     epochs = 500
     scheduler = None
@@ -1110,7 +1110,7 @@ if __name__=='__main__':
     #for trvi, test in skf.split(dataset, Y):
     dfs=[]
     va,ta=[],[]
-    for reps in range(5):
+    for reps in range(3):
         Vacc,Tacc=[],[]
         for trvi, test in slide_fold(slide):
             test_dataset=[dataset[i] for i in test]
@@ -1127,13 +1127,13 @@ if __name__=='__main__':
             valid_dataset=[dataset[i] for i in valid]    
             v_loader = DataLoader(valid_dataset, shuffle=True)
         
-            model = GIN(dim_features=dataset[0].x.shape[1], dim_target=1, layers=[8,8,8,8],dropout = 0.0,pooling='mean',eps=100.0,train_eps=False, do_ls=True)
+            model = GIN(dim_features=dataset[0].x.shape[1], dim_target=1, layers=[10,10,10,10,10],dropout = 0.0,pooling='mean',eps=100.0,train_eps=False, do_ls=True)
             net = NetWrapper(model, loss_function=None, device=device)
             model = model.to(device = net.device)
             optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
             #optimizer = optim.SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay, momentum=0.7, nesterov=True)
             #scheduler = OneCycleLR(optimizer,max_lr=learning_rate, steps_per_epoch=len(tr_loader), epochs=epochs, pct_start=0.25, div_factor=20, final_div_factor=20)
-            scheduler = CyclicLR(optimizer,learning_rate,5*learning_rate,40*len(tr_loader),mode='exp_range',gamma=0.8,cycle_momentum=False)
+            scheduler = CyclicLR(optimizer,learning_rate,5*learning_rate,50*len(tr_loader),mode='exp_range',gamma=0.8,cycle_momentum=False)
 
             #if visualize: showGraphDataset(getVisData(test_dataset,net.model,net.device));#1/0
                 
