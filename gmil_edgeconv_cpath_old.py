@@ -191,6 +191,17 @@ def calc_roc_auc(target, prediction):
     # import pdb;pdb.set_trace()
     # return roc_auc
 
+def add_missranked(df):
+    df.set_index('core')
+    miss=[]
+    for core in df.index:
+        lab,s=df.loc[core,'label'],df.loc[core,'GNN']
+        miss.append((df[np.logical_and(df['label'].values<lab, df['GNN'].values>s)].shape[0]+df[np.logical_and(df['label'].values>lab, df['GNN'].values<s)].shape[0])/sum(df['label'].values!=lab))
+    df['miss']=miss
+    return df
+        
+
+
 class alpha_scaler():
     def __init__(self, alpha, step_size) -> None:
         self.alpha=alpha
@@ -199,7 +210,6 @@ class alpha_scaler():
     def update_alpha(self):
         if self.alpha+self.step_size<1:
             self.alpha+=self.step_size
-        
 
 class learnable_sig(torch.nn.Module):
     def __init__(self, fsize) -> None:
@@ -207,6 +217,8 @@ class learnable_sig(torch.nn.Module):
         #self.l1=nn.Linear(fsize,1)
         self.l1 = Sequential(Linear(fsize, fsize), ReLU(),
                                     Linear(fsize, 1))
+        self.l2 = Sequential(Linear(fsize, fsize), ReLU(),
+                                    Linear(fsize, 1))                            
                 #self.first_h=PANConv(dim_features, out_emb_dim,5)
         self.alpha=nn.parameter.Parameter(2*torch.ones(1))
         self.beta=nn.parameter.Parameter(torch.zeros(1))
@@ -215,8 +227,10 @@ class learnable_sig(torch.nn.Module):
         y=[]
         for i in torch.unique(batch):
             #last_ind=torch.sum(batch<=i)-1
-            #y.append(torch.sigmoid(x[batch==i]*self.alpha-self.beta+self.gamma*torch.mean(x[batch==i]))-0.5)
-            y.append(torch.sigmoid(x[batch==i,:]*self.alpha-self.l1(xcore.T[:,i])))
+            #y.append(torch.sigmoid(x[batch==i,:]*self.alpha-self.beta+self.gamma*torch.mean(x[batch==i],dim=0,keepdim=True)))
+            #y.append(torch.sigmoid(x[batch==i,:]*self.alpha-self.beta))
+            #y.append(torch.sigmoid(x[batch==i,:]*self.alpha-self.l1(xcore.T[:,i])))
+            y.append(torch.sigmoid(x[batch==i,:]*(2+self.l2(xcore.T[:,i]))-self.l1(xcore.T[:,i])))
         return torch.cat(y)
 
 class GIN(torch.nn.Module):
@@ -401,7 +415,7 @@ class NetWrapper:
             #loss_reg=torch.mean(xx)
             #loss_es=torch.mean(torch.prod(xx,dim=1)**2)
             #loss_es=torch.mean(torch.max(toTensor(0.0).to(device),torch.prod(xx+toTensor(-0.1).to(device),dim=1))**2)
-            #loss=loss+0.1*self.scaler.alpha*loss_es#+0.5*loss_reg
+            #loss=loss+0.5*self.scaler.alpha*loss_es#+0.5*loss_reg
             #loss=loss+0.5*loss_reg
 
             acc = loss
@@ -844,7 +858,7 @@ def bokeh_plot(g):
     )
 
     # show result
-    output_file(filename=f"D:/Meso/Bokeh_core_split/{core}_{g.type_label[0]}.html", title="TMA cores graph NN visualisation")
+    output_file(filename=f"D:/Meso/Bokeh_core_split2/{core}_{g.type_label[0]}.html", title="TMA cores graph NN visualisation")
     save(gr)
     #show(gr)
     #html = file_html(gr, CDN, "my plot")
@@ -1101,17 +1115,18 @@ if __name__=='__main__':
     from sklearn.model_selection import StratifiedKFold, train_test_split
     skf = StratifiedKFold(n_splits=5,shuffle=True)
     #Vacc,Tacc=[],[]
-    visualize = 'plots' #'plots' #'pred'
+    visualize = False #'plots' #'pred'
 
     #added
     dataset,Y, slide=mk_graph()
     print('made graphs, starting training..')
 
     #for trvi, test in skf.split(dataset, Y):
-    dfs=[]
+    
     va,ta=[],[]
-    for reps in range(3):
+    for reps in range(5):
         Vacc,Tacc=[],[]
+        dfs=[]
         for trvi, test in slide_fold(slide):
             test_dataset=[dataset[i] for i in test]
             tt_loader = DataLoader(test_dataset, shuffle=True)
@@ -1150,16 +1165,17 @@ if __name__=='__main__':
             Vacc.append(val_acc)
             Tacc.append(tt_acc)
             print ("fold complete", len(Vacc),train_acc,val_acc,tt_acc)
-            if visualize and reps==0:
+            if visualize:
                 G, df=getVisData(test_dataset,net.model,net.device)
-                if visualize=='plots':
+                df=add_missranked(df)
+                if visualize=='plots' and reps==0:
                     showGraphDataset(G)
                 dfs.append(df)
                 print('vis')
 
         if visualize:
             pred_df=pd.concat(dfs,axis=0,ignore_index=True)
-            pred_df.to_csv(Path(r'D:\Results\TMA_results\GNN_class_temp.csv'), index=False)
+            pred_df.to_csv(Path(f'D:\Results\TMA_results\GNN_class_temp_r{reps}.csv'))
         print ("avg Valid acc=", np.mean(Vacc),"+/", np.std(Vacc))
         print ("avg Test acc=", np.mean(Tacc),"+/", np.std(Tacc))
         va.append(np.mean(Vacc))

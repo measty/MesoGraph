@@ -99,7 +99,7 @@ def mk_graph():
     #to_use.append('Nucleus: Circularity')
     to_use=[col for col in to_use if 'Detection probability' not in col]
     #to_use=[col for col in to_use if 'Smoothed' not in col]
-    to_use=[col for col in to_use if 'Median' not in col]
+    #to_use=[col for col in to_use if 'Median' not in col]
     #to_use=[col for col in to_use if 'Cluster' not in col]
     #to_use.append('Smoothed: 50 µm: Nearby detection counts')
     #to_use=[col for col in to_use if 'Cell' not in col]
