@@ -234,7 +234,7 @@ class learnable_sig(torch.nn.Module):
         return torch.cat(y)
 
 class GIN(torch.nn.Module):
-    def __init__(self, dim_features, dim_target, layers=[16],pooling='max',dropout = 0.0,eps=0.0,train_eps=False,do_ls=False):
+    def __init__(self, dim_features, dim_target, layers=[16],pooling='max',dropout = 0.0,eps=0.0,train_eps=False,do_ls=False,feats=[]):
         super(GIN, self).__init__()
         self.dropout = dropout
         self.embeddings_dim=layers
@@ -252,6 +252,7 @@ class GIN(torch.nn.Module):
         self.dim_features=dim_features
         self.subE=self.make_subnet()
         self.subS=self.make_subnet()
+        self.feats=feats
         
         #train_eps = True#config['train_eps']
 
@@ -282,13 +283,13 @@ class GIN(torch.nn.Module):
 
                 linears.append(Linear(out_emb_dim, 1))
                 
-                subnet = Sequential(Linear(1*input_emb_dim, out_emb_dim), BatchNorm1d(out_emb_dim), ReLU(),
+                subnet = Sequential(Linear(2*input_emb_dim, out_emb_dim), BatchNorm1d(out_emb_dim), ReLU(),
                                       Linear(out_emb_dim, out_emb_dim), BatchNorm1d(out_emb_dim), ReLU())
                 
                 ecnns.append(subnet)
                 
-                #ecs.append(EdgeConv(ecnns[-1],aggr='mean'))#DynamicEdgeConv#EdgeConv
-                ecs.append(GINConv(ecnns[-1]))
+                ecs.append(EdgeConv(ecnns[-1],aggr='mean'))#DynamicEdgeConv#EdgeConv
+                #ecs.append(GINConv(ecnns[-1]))
                 #self.ecs.append(DynamicEdgeConv(self.ecnns[-1],k=10,aggr='mean',num_workers=8))
 
         #self.first_h = torch.nn.ModuleList(self.first_h)
@@ -414,8 +415,8 @@ class NetWrapper:
             #act as a regularisation
             #loss_reg=torch.mean(xx)
             #loss_es=torch.mean(torch.prod(xx,dim=1)**2)
-            #loss_es=torch.mean(torch.max(toTensor(0.0).to(device),torch.prod(xx+toTensor(-0.1).to(device),dim=1))**2)
-            #loss=loss+0.5*self.scaler.alpha*loss_es#+0.5*loss_reg
+            loss_es=torch.mean(torch.max(toTensor(0.0).to(device),torch.prod(xx+toTensor(-0.1).to(device),dim=1))**2)
+            loss=loss+0.5*self.scaler.alpha*loss_es#+0.5*loss_reg
             #loss=loss+0.5*loss_reg
 
             acc = loss
@@ -662,7 +663,7 @@ def change_pixel(mask,i,j,val):
         for a,b in zip([0,0,1,-1],[-1,1,0,0]):
             #if mask[i+a,j+b,0]==255:
                 #mask[i+a,j+b,:]=val
-            if not (i+a<0 or i+a>2853 or j+b<0 or j+b>2853):
+            if not (i+a<0 or i+a>=mask.shape[0] or j+b<0 or j+b>=mask.shape[1]):
                 change_pixel(mask,i+a,j+b, val)
     else:
         return
@@ -858,7 +859,7 @@ def bokeh_plot(g):
     )
 
     # show result
-    output_file(filename=f"D:/Meso/Bokeh_core_split2/{core}_{g.type_label[0]}.html", title="TMA cores graph NN visualisation")
+    output_file(filename=f"D:/Meso/Bokeh_core_feat_es/{core}_{g.type_label[0]}.html", title="TMA cores graph NN visualisation")
     save(gr)
     #show(gr)
     #html = file_html(gr, CDN, "my plot")
@@ -894,7 +895,7 @@ def showGraph(G):
     plotGraph(coords,[tuple(e) for e in toNumpy(G.edge_index.t())],c=G.c,node_size=20,edge_alpha=0.25)
     
     
-def showGraphDataset(G):
+def showGraphDataset(G,mode='bokeh'):
     """
     Visualize a graph dataset through dimensionality reduction
     """
@@ -944,15 +945,20 @@ def showGraphDataset(G):
         #showGraph(G[g])
         #plt.title(toNumpy(G[g].z)[0])
     #plt.show()
+    if mode=='bokeh':
+        for i,g in enumerate(G.keys()): 
+            #core=g
+            #with Image.open(Path(f'D:\All_cores\{}.jpg')) as img:
+                #plt.imshow(img)
+                #showGraph(g)
+            #coords = toNumpy(G[g].coords)     # get coordinates
+            #bokeh_plot(coords,np.array([e for e in toNumpy(G[g].edge_index.t())]),G[g].c,core)
+            
+                bokeh_plot(G[g])
+    else:
+        #just return G so can make+save coloured masks
+        return G
 
-    for i,g in enumerate(G.keys()): 
-        #core=g
-        #with Image.open(Path(f'D:\All_cores\{}.jpg')) as img:
-            #plt.imshow(img)
-            #showGraph(g)
-        #coords = toNumpy(G[g].coords)     # get coordinates
-        #bokeh_plot(coords,np.array([e for e in toNumpy(G[g].edge_index.t())]),G[g].c,core)
-        bokeh_plot(G[g])
         #print('skip')
 
     
@@ -974,7 +980,10 @@ def getVisData(data,model,device):
             d = d.to(device)
             output,xx = model(d)
             Z.append(toNumpy(output[0]))
-            G[d.core[0]]=Data(x=d.x,v=xx, edge_index=d.edge_index,y=d.y,coords=d.coords,z=output[0],core=d.core, type_label=d.type_label,feat_names=d.feat_names)
+            try:
+                G[d.core[0]]=Data(x=d.x,v=xx, edge_index=d.edge_index,y=d.y,coords=d.coords,z=output[0],core=d.core, type_label=d.type_label,feat_names=d.feat_names,istumor=d.istumor)
+            except:
+                G[d.core[0]]=Data(x=d.x,v=xx, edge_index=d.edge_index,y=d.y,coords=d.coords,z=output[0],core=d.core, type_label=d.type_label,feat_names=d.feat_names)
             lab.append(d.y.item())
             core.append(d.core[0])
             all_pred.append((output[0,1]/output[0,0]+0.00001).item())
@@ -1108,28 +1117,34 @@ if __name__=='__main__':
     #%% MAIN TRAINING and VALIDATION
        
     #loss_class = MulticlassClassificationLoss
-    learning_rate = 0.0001
-    weight_decay =0.1
+    learning_rate = 0.00002
+    weight_decay =0.05
     epochs = 500
     scheduler = None
     from sklearn.model_selection import StratifiedKFold, train_test_split
     skf = StratifiedKFold(n_splits=5,shuffle=True)
     #Vacc,Tacc=[],[]
-    visualize = False #'plots' #'pred'
+    visualize = 'plots' #'plots' #'pred'
 
     #added
-    dataset,Y, slide=mk_graph()
+    dataset,Y, slide, used_feats=mk_graph()
     print('made graphs, starting training..')
 
     #for trvi, test in skf.split(dataset, Y):
     
+    on_all=False
     va,ta=[],[]
     for reps in range(5):
         Vacc,Tacc=[],[]
         dfs=[]
+        i=0
         for trvi, test in slide_fold(slide):
-            test_dataset=[dataset[i] for i in test]
-            tt_loader = DataLoader(test_dataset, shuffle=True)
+            if on_all:
+                trvi=trvi+test
+                tt_loader=None
+            else:
+                test_dataset=[dataset[i] for i in test]
+                tt_loader = DataLoader(test_dataset, shuffle=True)
             
             train, valid = train_test_split(trvi,test_size=0.25,shuffle=True,stratify=np.array(Y)[trvi])
             #train,valid = trvi, test
@@ -1142,13 +1157,13 @@ if __name__=='__main__':
             valid_dataset=[dataset[i] for i in valid]    
             v_loader = DataLoader(valid_dataset, shuffle=True)
         
-            model = GIN(dim_features=dataset[0].x.shape[1], dim_target=1, layers=[10,10,10,10,10],dropout = 0.0,pooling='mean',eps=100.0,train_eps=False, do_ls=True)
+            model = GIN(dim_features=dataset[0].x.shape[1], dim_target=1, layers=[10,10,10,10,10,10],dropout = 0,pooling='mean',eps=100.0,train_eps=False, do_ls=True, feats=used_feats)
             net = NetWrapper(model, loss_function=None, device=device)
             model = model.to(device = net.device)
             optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-            #optimizer = optim.SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay, momentum=0.7, nesterov=True)
+            #optimizer = optim.SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay, momentum=0.7, nesterov=False)
             #scheduler = OneCycleLR(optimizer,max_lr=learning_rate, steps_per_epoch=len(tr_loader), epochs=epochs, pct_start=0.25, div_factor=20, final_div_factor=20)
-            scheduler = CyclicLR(optimizer,learning_rate,5*learning_rate,50*len(tr_loader),mode='exp_range',gamma=0.8,cycle_momentum=False)
+            scheduler = CyclicLR(optimizer,learning_rate,5*learning_rate,50*len(tr_loader),scale_fn=lambda x: 0.8**x, scale_mode='cycle',cycle_momentum=False)
 
             #if visualize: showGraphDataset(getVisData(test_dataset,net.model,net.device));#1/0
                 
@@ -1165,6 +1180,9 @@ if __name__=='__main__':
             Vacc.append(val_acc)
             Tacc.append(tt_acc)
             print ("fold complete", len(Vacc),train_acc,val_acc,tt_acc)
+
+            torch.save(best_model,Path(f'D:\Results\TMA_results\models\\fold_{i}.pt'))
+            i+=1
             if visualize:
                 G, df=getVisData(test_dataset,net.model,net.device)
                 df=add_missranked(df)

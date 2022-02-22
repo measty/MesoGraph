@@ -24,8 +24,8 @@ def toGeometricWW(X,W,y,tt=0):
 def connectClusters(C,w=[],core_node=False,dthresh = 3000):
     
     if len(w)==0:
-        W =  NearestNeighbors(radius=40).fit(C).radius_neighbors_graph(C).todense()
-        #W =  NearestNeighbors(n_neighbors=5).fit(C).kneighbors_graph(C).todense()
+        #W =  NearestNeighbors(radius=30).fit(C).radius_neighbors_graph(C).todense()
+        W =  NearestNeighbors(n_neighbors=15).fit(C).kneighbors_graph(C).todense()
     else:
         #dist = DistanceMetric.get_metric('wminkowski', p=2, w=w)
         r=(20/500)*0.5
@@ -80,58 +80,89 @@ def set_core_origin(X,core,core_cents,core_node=False):
     return X
 
 
-def mk_graph():
-    p=Path('D:\QuPath_Projects\Meso_TMA\per_core_dets')
-    det_list=list(p.glob('*.csv'))
-    df=pd.read_csv(det_list[0])
-    core_cents=pd.read_csv(Path('D:\QuPath_Projects\Meso_TMA\Dearrayed\core_cents.csv'))
-    JL_labels=pd.read_csv(Path('D:\Meso\JL_labels.csv'))
+def mk_graph(p=Path('D:\QuPath_Projects\Meso_TMA\per_core_dets'), mode='TMA',to_use=None):
+    if not isinstance(p, Path):
+        df=p[0]
+        read_files=False
+    else:
+        det_list=list(p.glob('*.csv'))
+        df=pd.read_csv(det_list[0])
+        read_files=True
     core_node=True
     keep_level=1
     use_JL=True
 
-    columns=df.columns
-    to_use=columns[7:-2]
-    #to_use=[col for col in to_use if 'Circularity' not in col]
-    to_use=[col for col in to_use if 'diameter' not in col]
-    to_use=[col for col in to_use if 'Length' not in col]
-    to_use=[col for col in to_use if 'Delaunay' not in col]
-    #to_use.append('Nucleus: Circularity')
-    to_use=[col for col in to_use if 'Detection probability' not in col]
-    #to_use=[col for col in to_use if 'Smoothed' not in col]
-    #to_use=[col for col in to_use if 'Median' not in col]
-    #to_use=[col for col in to_use if 'Cluster' not in col]
-    #to_use.append('Smoothed: 50 µm: Nearby detection counts')
-    #to_use=[col for col in to_use if 'Cell' not in col]
-    #to_use=[col for col in to_use if 'Cytoplasm' not in col]
-    #to_use=[col for col in to_use if 'Diameter' not in col]
-    #to_use=[col for col in to_use if 'Haralick' not in col]
-    '''to_use=['Nucleus: Circularity',
-        'Nucleus: Area µm^2',
-        'Hematoxylin: Nucleus: Mean',
-        #'ROI: 0.44 µm per pixel: OD Sum: Mean',
-        'Eosin: Nucleus: Mean',
-        'Smoothed: 50 µm: Nearby detection counts',
-        #'Nucleus: Length µm'
-        'Circle: Diameter 50.0 µm: 0.44 µm per pixel: OD Sum: Haralick Entropy (F8)'
-        ]'''
+    if mode=='TMA':
+        core_cents=pd.read_csv(Path('D:\QuPath_Projects\Meso_TMA\Dearrayed\core_cents.csv'))
+        JL_labels=pd.read_csv(Path('D:\Meso\JL_labels.csv'))
+        pres=pd.read_csv(Path('D:\All_cores\core_labels_pres.csv'))
+    else:
+        TCGA_df=pd.read_csv(r'D:\TCGA_Data\TCGA_WSI_labels_DX.csv')
+        use_JL=False
 
+    if to_use==None:
+        columns=df.columns
+        to_use=columns[7:-1]
+        to_use=[col for col in to_use if 'label' not in col]
+        #to_use=[col for col in to_use if 'Circularity' not in col]
+        #to_use=[col for col in to_use if 'diameter' not in col]
+        to_use=[col for col in to_use if 'Length' not in col]
+        to_use=[col for col in to_use if 'Delaunay' not in col]
+        #to_use.append('Nucleus: Circularity')
+        to_use=[col for col in to_use if 'Detection probability' not in col]
+        #to_use=[col for col in to_use if 'Smoothed' not in col]
+        #to_use=[col for col in to_use if 'Median' not in col]
+        to_use=[col for col in to_use if 'Cluster' not in col]
+        #to_use=[col for col in to_use if 'Hematoxylin' not in col]
+        #to_use=[col for col in to_use if 'Eosin' not in col]
+        #to_use=[col for col in to_use if 'OD Sum' not in col]
+        #to_use.append('Smoothed: 50 µm: Nearby detection counts')
+        #to_use=[col for col in to_use if 'Cell' not in col]
+        #to_use=[col for col in to_use if 'Cytoplasm' not in col]
+        #to_use=[col for col in to_use if 'Diameter' not in col]
+        #to_use=[col for col in to_use if 'Haralick' not in col]
+        '''to_use=['Nucleus: Circularity',
+            'Nucleus: Area µm^2',
+            'Hematoxylin: Nucleus: Mean',
+            #'ROI: 0.44 µm per pixel: OD Sum: Mean',
+            'Eosin: Nucleus: Mean',
+            'Smoothed: 50 µm: Nearby detection counts',
+            #'Nucleus: Length µm'
+            'Circle: Diameter 50.0 µm: 0.44 µm per pixel: OD Sum: Haralick Entropy (F8)'
+            ]'''
+    print(f'using {len(to_use)} features: ')
     print(to_use)
+    #to_use=res_cols
 
-    dfs,slide=[],[]
-    for dets in det_list:
-        #slide.append(map_ind(dets.stem))
-        dfs.append(pd.read_csv(dets))
+    use_res=True
+    if use_res:
+        res_cols=[f'res{i}' for i in range(512)]
+        to_use=to_use+res_cols
 
+    if read_files:
+        dfs=[]
+        for dets in det_list:
+            #slide.append(map_ind(dets.stem))
+            dfs.append(pd.read_csv(dets))
+            if use_res:
+                res_feats=np.load(Path(r'D:\Meso\det_res_feats_snorm').joinpath(dfs[-1].Parent.iloc[0]+'.npy'))
+                dfs[-1][res_cols]=res_feats[:,0:-2]       
+    else:
+        dfs=p
     all_dets=pd.concat(dfs,ignore_index=True)
     norm=StandardScaler().fit(all_dets[to_use].to_numpy())
-    pres=pd.read_csv(Path('D:\All_cores\core_labels_pres.csv'))
-    graphs,Y=[],[]
+    
+    graphs,Y,slide=[],[],[]
     for df in dfs:
-        if (df.Parent.iloc[0] not in pres.Core.values) or pres[pres.Core==df.Parent.iloc[0]].Quality.values[0]>keep_level:
+        if mode=='TMA' and ((df.Parent.iloc[0] not in pres.Core.values) or pres[pres.Core==df.Parent.iloc[0]].Quality.values[0]>keep_level):
             continue
-        df=df[['Parent','Centroid X µm','Centroid Y µm']+to_use+['label']].dropna()
-        slide.append(map_ind(df.Parent.iloc[0]))
+        if mode=='TMA':
+            df=df[['Parent','Centroid X µm','Centroid Y µm']+to_use+['label']]#.dropna()
+            df=df.fillna(df.mean())
+        else:
+            df=df[['Parent','Centroid X µm','Centroid Y µm']+to_use+['label','istumor']]#.dropna()
+            df=df.fillna(df.mean())
+        if mode=='TMA': slide.append(map_ind(df.Parent.iloc[0]))
         X_xy=df[['Centroid X µm','Centroid Y µm']].to_numpy()/500
 
         if use_JL and df.Parent.iloc[0] in JL_labels.Core.values:
@@ -162,11 +193,15 @@ def mk_graph():
         g.core=df.Parent.iloc[0]
         g.type_label=df.label.iloc[0]
         g.feat_names=to_use
-        g.coords = toTensor(set_core_origin(df[['Centroid X µm','Centroid Y µm']].to_numpy(),g.core,core_cents, core_node))
+        if mode=='TMA':
+            g.coords = toTensor(set_core_origin(df[['Centroid X µm','Centroid Y µm']].to_numpy(),g.core,core_cents, core_node))
+        else:
+            g.coords = toTensor(df[['Centroid X µm','Centroid Y µm']].to_numpy())
+            g.istumor=df['istumor'].to_numpy()
         graphs.append(g)
         print(f'Done graph for core {g.core}')
 
-    return graphs, Y, slide
+    return graphs, Y, slide, to_use
 
 if __name__=='__main__':
     mk_graph()
