@@ -25,7 +25,10 @@ def connectClusters(C,w=[],core_node=False,dthresh = 3000):
     
     if len(w)==0:
         #W =  NearestNeighbors(radius=30).fit(C).radius_neighbors_graph(C).todense()
-        W =  NearestNeighbors(n_neighbors=15).fit(C).kneighbors_graph(C).todense()
+        W =  NearestNeighbors(n_neighbors=3).fit(C).kneighbors_graph(C).todense()
+        #W =  NearestNeighbors(n_neighbors=3).fit(C).kneighbors_graph(C, mode='distance')
+        #W[W>40]=0
+        #W=W.todense()
     else:
         #dist = DistanceMetric.get_metric('wminkowski', p=2, w=w)
         r=(20/500)*0.5
@@ -110,7 +113,7 @@ def mk_graph(p=Path('D:\QuPath_Projects\Meso_TMA\per_core_dets'), mode='TMA',to_
         to_use=[col for col in to_use if 'Delaunay' not in col]
         #to_use.append('Nucleus: Circularity')
         to_use=[col for col in to_use if 'Detection probability' not in col]
-        #to_use=[col for col in to_use if 'Smoothed' not in col]
+        to_use=[col for col in to_use if 'Smoothed' not in col]
         #to_use=[col for col in to_use if 'Median' not in col]
         to_use=[col for col in to_use if 'Cluster' not in col]
         #to_use=[col for col in to_use if 'Hematoxylin' not in col]
@@ -120,7 +123,7 @@ def mk_graph(p=Path('D:\QuPath_Projects\Meso_TMA\per_core_dets'), mode='TMA',to_
         #to_use=[col for col in to_use if 'Cell' not in col]
         #to_use=[col for col in to_use if 'Cytoplasm' not in col]
         #to_use=[col for col in to_use if 'Diameter' not in col]
-        #to_use=[col for col in to_use if 'Haralick' not in col]
+        to_use=[col for col in to_use if 'Haralick' not in col]
         '''to_use=['Nucleus: Circularity',
             'Nucleus: Area µm^2',
             'Hematoxylin: Nucleus: Mean',

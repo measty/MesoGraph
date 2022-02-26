@@ -8,6 +8,7 @@ from bokeh.core.enums import Palette
 from bokeh.models.mappers import ColorMapper, LinearColorMapper
 from bokeh.models.sources import ColumnDataSource
 from bokeh.models.widgets.markups import Div
+from sympy import N
 from mk_graph import USE_CUDA, mk_graph, slide_fold
 import numpy as np
 import matplotlib.pyplot as plt
@@ -43,7 +44,9 @@ from bokeh.models.mappers import EqHistColorMapper
 from bokeh.embed import file_html
 from bokeh.resources import CDN
 import pandas as pd
+from torch_geometric.nn.models import GNNExplainer
 import sys
+from bokeh.models.tools import TapTool
 from sklearn.feature_selection import SelectKBest
 from sklearn.feature_selection import chi2, mutual_info_regression, f_regression
 
@@ -308,10 +311,14 @@ class GIN(torch.nn.Module):
         
         
 
-    def forward_sub(self, sub, data):
+    def forward_sub(self, sub, data, edge_index=None, edge_weight=None):
         # Implement Equation 4.2 of the paper i.e. concat all layers' graph representations and apply linear model
         # note: this can be decomposed in one smaller linear model per layer
-        xfeat, edge_index, batch = data.x, data.edge_index, data.batch
+        if edge_index==None:
+            xfeat, edge_index, batch = data.x, data.edge_index, data.batch
+        else:
+            xfeat=data
+            batch=torch.zeros((xfeat.shape[0],), dtype=torch.long, device='cuda')
         
         out = 0
         pooling = self.pooling
@@ -361,14 +368,16 @@ class GIN(torch.nn.Module):
             out=pooling(Z, batch)
             return out,Z
 
-    def forward(self, data):
-        core_outE, cell_outE=self.forward_sub(self.subE, data)
-        core_outS, cell_outS=self.forward_sub(self.subS, data)
+    def forward(self, x, edge_index=None, edge_weight=None, batch=None):
+        core_outE, cell_outE=self.forward_sub(self.subE, x, edge_index, edge_weight)
+        core_outS, cell_outS=self.forward_sub(self.subS, x, edge_index, edge_weight)
 
         core_out=torch.cat([core_outE,core_outS],dim=1)
         cell_out=torch.cat([cell_outE,cell_outS],dim=1)
-
-        return core_out, cell_out
+        if edge_index==None:
+            return core_out, cell_out
+        else:
+            return cell_out
     
    
 class NetWrapper:
@@ -415,8 +424,8 @@ class NetWrapper:
             #act as a regularisation
             #loss_reg=torch.mean(xx)
             #loss_es=torch.mean(torch.prod(xx,dim=1)**2)
-            loss_es=torch.mean(torch.max(toTensor(0.0).to(device),torch.prod(xx+toTensor(-0.1).to(device),dim=1))**2)
-            loss=loss+0.5*self.scaler.alpha*loss_es#+0.5*loss_reg
+            #loss_es=torch.mean(torch.max(toTensor(0.0).to(device),torch.prod(xx+toTensor(-0.1).to(device),dim=1))**2)
+            #loss=loss+0.5*self.scaler.alpha*loss_es#+0.5*loss_reg
             #loss=loss+0.5*loss_reg
 
             acc = loss
@@ -653,6 +662,24 @@ def sort_feats(xdf, feat_names, stat=mutual_info_regression):
     sort_feats=np.flip(feat_names[inds])
     return list(sort_feats)
 
+def explain_net(core,node_idx=None,N=10):
+    explainer = GNNExplainer(model, epochs=200, return_type='raw', feat_mask_type='individual_feature')
+    #core=dataset[5]
+    x = core.x
+    edge_index= core.edge_index
+    #node_feat_mask, edge_mask = explainer.explain_node(node_idx, x, edge_index)
+    node_feat_mask, edge_mask = explainer.explain_graph(x, edge_index)
+    topN=np.fliplr(np.argsort(node_feat_mask.to('cpu'),axis=1))[:,:N]
+    topN_score=np.vstack([node_feat_mask.cpu().numpy()[i,topN[i,:]] for i in range(topN.shape[0])])
+    node_imp=[np.mean(edge_mask[np.any((edge_index.T==n).cpu().numpy(), axis=1)].cpu().numpy()) for n in range(x.shape[0])]
+
+    #im=plt.imread(f'D:\All_cores\{core.core}.jpg') 
+    #plt.imshow(im)                                                
+    #ax, G = explainer.visualize_subgraph(node_idx, edge_index, edge_mask, threshold=0.5)
+    #plt.show()
+
+    return topN, topN_score, node_imp
+
 def change_pixel(mask,i,j,val):
     if val==255:
         val=0.01
@@ -679,8 +706,14 @@ def bokeh_plot(g):
     print(f'creating vis for core: {core}...')
     tx=f'core {core}, true label is: {g.type_label}, score is: {g.z[1].item()/(g.z[0].item()+0.00001)}'
 
-    p = figure(title=tx,x_range=(0,2854), y_range=(0,2854), width=900, height=900)
-    
+    TOOLTIPS=[
+        ("index", "$index"),
+        ("(x,y)", "($x, $y)"),
+        ("Top Feats", "@top_feats"),
+      ]
+    p = figure(title=tx,x_range=(0,2854), y_range=(0,2854), width=900, height=900, tooltips=TOOLTIPS)
+    p.add_tools(TapTool())
+
     #mask=p.image_url(url=[f'D:\All_masks_inv\{core}.png'],x=0, y=2854, w=2854, h=2854, anchor="top_left", global_alpha=0.35)
     
     with Image.open(Path(f'D:\All_cores\{core}.jpg')) as imfile:
@@ -717,6 +750,21 @@ def bokeh_plot(g):
     xdf['y']=2854-Xn[:,1]
     sorted_feats=sort_feats(xdf, feat_names, mutual_info_regression)
     sorted_feats.extend(['ep_score','s_score'])
+
+    #gnn explainer stuff
+    topN, topN_score, node_imp = explain_net(g)
+    xdf['imp']=node_imp
+    top_feats,top_scores=[],[]
+    for k in range(topN.shape[0]):
+        #top_str='\r\n'.join(feat_names[topN[k,:]])
+        #top_feats.append(top_str)
+        top_feats.append(feat_names[topN[k,:]])
+        top_scores.append(topN_score[k,:])
+
+
+    xdf['top_feats']=top_feats
+    xdf['top_scores']=top_scores
+    sorted_feats=['imp','top_feats']+sorted_feats
     
     im=np.flipud(im)
     fmask.close()
@@ -746,6 +794,47 @@ def bokeh_plot(g):
     sorted_feats=sort_feats(xdf, feat_names, f_regression)
     menu = list(zip(sorted_feats,sorted_feats))
     drop_f = Dropdown(label="Select Feat (f1)", button_type="warning", menu=menu)
+
+    s2 = ColumnDataSource(data=dict(names=[1,2,3,4,5,6,7,8,9,10], scores=[0.1,0.2,0.3,0.1,0.1,0.24,0.5,0.4,0.3,0.2]))
+    p2 = figure(width=700, height=500, x_range=(0, 1), y_range=(0,11))
+    bar = p2.hbar(y='names', height=0.5, left=0, right='scores', color="navy", source=s2)
+    #p2.yaxis.ticker = [1,2,3,4,5,6,7,8,9,10]
+
+    topN_code = '''if (cb_data.source.selected.indices.length > 0){
+            lines.visible = true;
+            var selected_index = cb_data.source.selected.indices[0];
+            lines.data_source.data['y'] = lines_y[selected_index]
+            lines.data_source.change.emit(); 
+          }'''
+
+    fds.selected.js_on_change('indices', CustomJS(args=dict(s1=fds, s2=s2, ax=p2.yaxis[0], b=bar), code=r"""
+        const inds = cb_obj.indices;
+        const d1 = s1.data;
+        const d2 = s2.data;
+        console.log(d2)
+        console.log(inds)
+        const feats = d1['top_feats'][inds[0]]
+        //console.log(p.y_range)
+        //p.y_range.factors=feats
+        const od={1: 'a', 2: 'a',3: 'a',4: 'a',5: 'a',6: 'a',7: 'a',8: 'a',9: 'a',10: 'a'}
+        const scores = d1['top_scores'][inds[0]]
+        //d2['names'] = []
+        d2['scores'] = scores
+        //console.log(p)
+        console.log(feats)
+        console.log(scores)
+        for (let i = 0; i < feats.length; i++) {
+            //d2['names'].push(feats[i])
+            //d2['scores'].push(scores[i])
+            od[i]=feats[i]
+        }
+        ax.major_label_overrides = od
+        console.log(d2)
+        s2.change.emit();
+    """)
+)
+
+    #p.select(TapTool).callback=
 
     slider = Slider(
         title="Adjust alpha",
@@ -854,12 +943,12 @@ def bokeh_plot(g):
     # create layout
     gr = layout(
         [
-            [p, [slider, toggle1, toggle2, toggle3, drop_i, drop_f, div]],
+            [p, [slider, toggle1, toggle2, toggle3, drop_i, drop_f, div,p2]],
         ]
     )
 
     # show result
-    output_file(filename=f"D:/Meso/Bokeh_core_feat_es/{core}_{g.type_label[0]}.html", title="TMA cores graph NN visualisation")
+    output_file(filename=f"D:/Meso/Bokeh_core_temp/{core}_{g.type_label[0]}.html", title="TMA cores graph NN visualisation")
     save(gr)
     #show(gr)
     #html = file_html(gr, CDN, "my plot")
@@ -1117,14 +1206,14 @@ if __name__=='__main__':
     #%% MAIN TRAINING and VALIDATION
        
     #loss_class = MulticlassClassificationLoss
-    learning_rate = 0.00002
+    learning_rate = 0.00003
     weight_decay =0.05
     epochs = 500
     scheduler = None
     from sklearn.model_selection import StratifiedKFold, train_test_split
     skf = StratifiedKFold(n_splits=5,shuffle=True)
     #Vacc,Tacc=[],[]
-    visualize = 'plots' #'plots' #'pred'
+    visualize = 'pred' #'plots' #'pred'
 
     #added
     dataset,Y, slide, used_feats=mk_graph()
@@ -1134,7 +1223,7 @@ if __name__=='__main__':
     
     on_all=False
     va,ta=[],[]
-    for reps in range(5):
+    for reps in range(1):
         Vacc,Tacc=[],[]
         dfs=[]
         i=0
@@ -1193,7 +1282,7 @@ if __name__=='__main__':
 
         if visualize:
             pred_df=pd.concat(dfs,axis=0,ignore_index=True)
-            pred_df.to_csv(Path(f'D:\Results\TMA_results\GNN_class_temp_r{reps}.csv'))
+            pred_df.to_csv(Path(f'D:\Results\TMA_results\GNN_nn_5{reps}.csv'))
         print ("avg Valid acc=", np.mean(Vacc),"+/", np.std(Vacc))
         print ("avg Test acc=", np.mean(Tacc),"+/", np.std(Tacc))
         va.append(np.mean(Vacc))

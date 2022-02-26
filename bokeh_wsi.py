@@ -6,6 +6,9 @@ from bokeh.util.compiler import JavaScript, TypeScript
 from bokeh.models import Slider, Toggle, Dropdown, PreText
 from bokeh.models.callbacks import CustomJS
 from bokeh.layouts import layout
+from pathlib import Path
+import numpy as np
+from bokeh.plotting import ColumnDataSource
 
 #import {TileSource} from "C:/Users/meast/anaconda3/envs/bkdev/Lib/site-packages/bokeh-3.0.0.dev1+47.g281e3f87d-py3.9.egg/bokeh/server/static/js/lib/models/tiles/tile_source"
 #import * as p from "C:/Users/meast/anaconda3/envs/bkdev/Lib/site-packages/bokeh-3.0.0.dev1+47.g281e3f87d-py3.9.egg/bokeh/server/static/js/lib/core/properties"
@@ -388,8 +391,9 @@ def make_ts(route):
   ts=WMTSTileSource(name="WSI provider", url=route, attribution="")
   ts.tile_size=254
   ts.initial_resolution=40000*sf   #156543.03392804097
-  ts.x_origin_offset=0
-  ts.y_origin_offset=10152000*sf
+  ts.x_origin_offset=0#5000000
+  #ts.y_origin_offset=-2500000
+  ts.y_origin_offset=10160000*sf
   ts.wrap_around=False
   ts.max_zoom=9
   #ts.min_zoom=10
@@ -399,13 +403,34 @@ def make_ts(route):
 ts1=make_ts(r'http://127.0.0.1:5000/layer/slide/zoomify/TileGroup1/{z}-{x}-{y}.png')
 ts2=make_ts(r'http://127.0.0.1:5000/layer/mask/zoomify/TileGroup1/{z}-{x}-{y}.png')
 
+
+base_path=Path(r'E:\Meso_TCGA\slides_tiled\TCGA-SC-A6LN-01Z-00-DX1.379BF588-5A65-4BF8-84CF-5136085D8A47\graph.npz')
+
+with np.load(base_path) as dat:
+  X=dat['X']
+  c=dat['c']
+  #it=dat['it']
+
+X=X[0:-1:10,:]
+c=c[0:-1:10,:]
+coord_sf=155.027
+
+source = ColumnDataSource(data=dict(x=coord_sf*X[:,0], y=-coord_sf*X[:,1], c1=c[:,0],c2=c[:,1],))
+
+TOOLTIPS=[
+        ("index", "$index"),
+        ("(x,y)", "($x, $y)"),
+        ("Scores", "[@c1, @c2]"),
+      ]
+
 #p = figure(x_range=(0, 47194), y_range=(0, 180848),x_axis_type="linear", y_axis_type="linear")
 #p = figure(x_range=(0, 180848), y_range=(0,47194),x_axis_type="mercator", y_axis_type="mercator", width=1200,height=800)
-p = figure(x_range=(0, 80000), y_range=(0,80000),x_axis_type="linear", y_axis_type="linear", width=1200,height=800)
+p = figure(x_range=(0, 9000000), y_range=(0,-6000000),x_axis_type="linear", y_axis_type="linear", width=1200,height=800, tooltips=TOOLTIPS, lod_factor=20)
 p.add_tile(ts1)
 p.add_tile(ts2)
 p.grid.grid_line_color=None
-#p.circle([1000, 2000, 3000, 4000, 5000], [600, 700, 2000, 4000, 5000], size=20, color="navy", alpha=0.5)
+
+nodes = p.circle('x', 'y', size=10, color="cyan", alpha=1.0, source = source)
 #p.renderers[0].tile_source.x_origin_offset=0
 #p.renderers[0].tile_source.y_origin_offset=0
 #p.renderers[0].tile_source.initial_resolution=4000
@@ -415,7 +440,7 @@ slider1 = Slider(
         start=0,
         end=1,
         step=0.05,
-        value=0.5
+        value=1.0
     )
 
 slider2 = Slider(
@@ -423,8 +448,33 @@ slider2 = Slider(
         start=0,
         end=1,
         step=0.05,
-        value=0.5
+        value=0.8
     )
+
+toggle1 = Toggle(label="Show Dots", button_type="success")
+toggle2 = Toggle(label="Show Mask", button_type="success")
+
+callback1 = CustomJS(args=dict(n=nodes, s=slider1), code="""
+        if (this.active) {
+            n.visible = false;
+        } else {
+            n.glyph.line_alpha = s.value;
+            n.visible = true;
+        };
+    """)
+
+callback2=CustomJS(args=dict(p=p,s=slider2), code="""
+        if (p.renderers[1].alpha==0) {
+        p.renderers[1].alpha=s.value;
+        }
+        else {
+          p.renderers[1].alpha=0.0
+        }
+
+    """)
+
+toggle1.js_on_click(callback1)
+toggle2.js_on_click(callback2)
 
 slidercb1=CustomJS(args=dict(p=p,s=slider1), code="""
         p.renderers[0].alpha=s.value;
@@ -444,7 +494,7 @@ slider2.js_on_change('value', slidercb2)
 
 gr = layout(
         [
-            [p, [slider1,slider2]],#, toggle1, toggle2, toggle3, drop_i, drop_f, div]],
+            [p, [slider1,slider2, toggle1, toggle2]],#, toggle1, toggle2, toggle3, drop_i, drop_f, div]],
         ]
     )
 
