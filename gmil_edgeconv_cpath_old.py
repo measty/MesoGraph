@@ -948,7 +948,7 @@ def bokeh_plot(g):
     )
 
     # show result
-    output_file(filename=f"D:/Meso/Bokeh_core_temp/{core}_{g.type_label[0]}.html", title="TMA cores graph NN visualisation")
+    output_file(filename=f"D:/Meso/Bokeh_core_feat_r30/{core}_{g.type_label[0]}.html", title="TMA cores graph NN visualisation")
     save(gr)
     #show(gr)
     #html = file_html(gr, CDN, "my plot")
@@ -1213,7 +1213,7 @@ if __name__=='__main__':
     from sklearn.model_selection import StratifiedKFold, train_test_split
     skf = StratifiedKFold(n_splits=5,shuffle=True)
     #Vacc,Tacc=[],[]
-    visualize = 'pred' #'plots' #'pred'
+    visualize = 'plots' #'plots' #'pred'
 
     #added
     dataset,Y, slide, used_feats=mk_graph()
@@ -1223,7 +1223,7 @@ if __name__=='__main__':
     
     on_all=False
     va,ta=[],[]
-    for reps in range(1):
+    for reps in range(3):
         Vacc,Tacc=[],[]
         dfs=[]
         i=0
@@ -1270,7 +1270,7 @@ if __name__=='__main__':
             Tacc.append(tt_acc)
             print ("fold complete", len(Vacc),train_acc,val_acc,tt_acc)
 
-            torch.save(best_model,Path(f'D:\Results\TMA_results\models\\fold_{i}.pt'))
+            torch.save(best_model,Path(f'D:\Results\TMA_results\models\\n11_fold_{i}.pt'))
             i+=1
             if visualize:
                 G, df=getVisData(test_dataset,net.model,net.device)
@@ -1282,7 +1282,7 @@ if __name__=='__main__':
 
         if visualize:
             pred_df=pd.concat(dfs,axis=0,ignore_index=True)
-            pred_df.to_csv(Path(f'D:\Results\TMA_results\GNN_nn_5{reps}.csv'))
+            pred_df.to_csv(Path(f'D:\Results\TMA_results\GNN_n_11{reps}.csv'))
         print ("avg Valid acc=", np.mean(Vacc),"+/", np.std(Vacc))
         print ("avg Test acc=", np.mean(Tacc),"+/", np.std(Tacc))
         va.append(np.mean(Vacc))

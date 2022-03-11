@@ -1,3 +1,4 @@
+from cmath import pi
 from xyzservices import TileProvider
 from bokeh.plotting import figure, output_file, show
 from bokeh.models.tiles import WMTSTileSource, TMSTileSource, TileSource, MercatorTileSource
@@ -7,8 +8,11 @@ from bokeh.models import Slider, Toggle, Dropdown, PreText
 from bokeh.models.callbacks import CustomJS
 from bokeh.layouts import layout
 from pathlib import Path
+import json
 import numpy as np
 from bokeh.plotting import ColumnDataSource
+from bokeh.models import GeoJSONDataSource
+from bokeh.transform import linear_cmap
 
 #import {TileSource} from "C:/Users/meast/anaconda3/envs/bkdev/Lib/site-packages/bokeh-3.0.0.dev1+47.g281e3f87d-py3.9.egg/bokeh/server/static/js/lib/models/tiles/tile_source"
 #import * as p from "C:/Users/meast/anaconda3/envs/bkdev/Lib/site-packages/bokeh-3.0.0.dev1+47.g281e3f87d-py3.9.egg/bokeh/server/static/js/lib/core/properties"
@@ -381,19 +385,32 @@ class MyMercatorTileSource(TileSource):
     """)
 
 slide_width=180848
-tile_size=254
+tile_size=256
 init_res=slide_width/tile_size
+mpp=0.5015
+
+def invert_y(data):
+  feats=[]
+  for feat in range(len(data['features'])):
+    if data['features'][feat]['geometry']['type']=='MultiPolygon':
+      #skip.append(feat)
+      continue
+    for i in range(len(data['features'][feat]['geometry']['coordinates'][0])):
+      data['features'][feat]['geometry']['coordinates'][0][i][1]=-data['features'][feat]['geometry']['coordinates'][0][i][1]
+    if feat%10==0:
+      feats.append(data['features'][feat])
+  data['features']=feats
 
 sf=1
 #wsi_provider=TileProvider(name="WSI provider", url=r'http://127.0.0.1:5000/slide_files/{z}/{x}_{y}.jpeg', attribution="", size=254)
 def make_ts(route):
   sf=1
   ts=WMTSTileSource(name="WSI provider", url=route, attribution="")
-  ts.tile_size=254
-  ts.initial_resolution=40000*sf   #156543.03392804097
+  ts.tile_size=256
+  ts.initial_resolution=40211.5*sf*(2/(100*pi))   #156543.03392804097    40030 great circ
   ts.x_origin_offset=0#5000000
   #ts.y_origin_offset=-2500000
-  ts.y_origin_offset=10160000*sf
+  ts.y_origin_offset=10247680*sf*(2/(100*pi))  + 438.715 +38.997+13-195.728  #10160000,   509.3
   ts.wrap_around=False
   ts.max_zoom=9
   #ts.min_zoom=10
@@ -409,13 +426,16 @@ base_path=Path(r'E:\Meso_TCGA\slides_tiled\TCGA-SC-A6LN-01Z-00-DX1.379BF588-5A65
 with np.load(base_path) as dat:
   X=dat['X']
   c=dat['c']
-  #it=dat['it']
+  it=dat['it']
 
 X=X[0:-1:10,:]
 c=c[0:-1:10,:]
-coord_sf=155.027
+it=it[0:-1:10,0]
+cvals=0.5+(c[:,0]**2-c[:,1]**2)/2
+cvals[it==False]=0
+coord_sf=1#155.027
 
-source = ColumnDataSource(data=dict(x=coord_sf*X[:,0], y=-coord_sf*X[:,1], c1=c[:,0],c2=c[:,1],))
+source = ColumnDataSource(data=dict(x=coord_sf*X[:,0], y=-coord_sf*X[:,1], c=cvals,))
 
 TOOLTIPS=[
         ("index", "$index"),
@@ -423,17 +443,29 @@ TOOLTIPS=[
         ("Scores", "[@c1, @c2]"),
       ]
 
+objpath=Path(r'E:\Meso_TCGA\A6LN_example2.geojson')
+#objpath=Path(r'E:\Meso_TCGA\A6LN_allcells_nofeats.geojson')
+with open(objpath,'rb') as gf:
+  data = json.load(gf)
+invert_y(data)
+patch_source = GeoJSONDataSource(geojson=json.dumps(data))
+
 #p = figure(x_range=(0, 47194), y_range=(0, 180848),x_axis_type="linear", y_axis_type="linear")
 #p = figure(x_range=(0, 180848), y_range=(0,47194),x_axis_type="mercator", y_axis_type="mercator", width=1200,height=800)
-p = figure(x_range=(0, 9000000), y_range=(0,-6000000),x_axis_type="linear", y_axis_type="linear", width=1200,height=800, tooltips=TOOLTIPS, lod_factor=20)
+p = figure(x_range=(0, 70000), y_range=(0,-50000),x_axis_type="linear", y_axis_type="linear",
+   width=1500,height=900, tooltips=TOOLTIPS, lod_factor=20,output_backend="webgl")
 p.add_tile(ts1)
 p.add_tile(ts2)
 p.grid.grid_line_color=None
 
-nodes = p.circle('x', 'y', size=10, color="cyan", alpha=1.0, source = source)
-#p.renderers[0].tile_source.x_origin_offset=0
-#p.renderers[0].tile_source.y_origin_offset=0
+circ_cmapper=linear_cmap(field_name='c', palette='RdYlGn11' ,low=0.001 ,high=1, high_color=(255,255,255,1) ,low_color=(255,255,255,1))
+nodes = p.circle('x', 'y', size=10, color=circ_cmapper, alpha=1.0, source = source)
+pat = p.patches('xs','ys', source=patch_source, fill_alpha=0.1, line_alpha=1.0)
+p.renderers[0].tile_source.max_zoom=8
+p.renderers[0].tile_source.max_zoom=8
 #p.renderers[0].tile_source.initial_resolution=4000
+p.renderers[0].smoothing=False
+#p.renderers[1].smoothing=False
 
 slider1 = Slider(
         title="Adjust alpha WSI",
@@ -478,8 +510,8 @@ toggle2.js_on_click(callback2)
 
 slidercb1=CustomJS(args=dict(p=p,s=slider1), code="""
         p.renderers[0].alpha=s.value;
-        p.renderers[0].tile_source.max_zoom=9
-        p.renderers[1].tile_source.max_zoom=9
+        p.renderers[0].tile_source.max_zoom=7
+        p.renderers[1].tile_source.max_zoom=7
 
     """)
 

@@ -24,10 +24,10 @@ def toGeometricWW(X,W,y,tt=0):
 def connectClusters(C,w=[],core_node=False,dthresh = 3000):
     
     if len(w)==0:
-        #W =  NearestNeighbors(radius=15).fit(C).radius_neighbors_graph(C).todense()
+        #W =  NearestNeighbors(radius=30).fit(C).radius_neighbors_graph(C).todense()
         #W =  NearestNeighbors(n_neighbors=11).fit(C).kneighbors_graph(C).todense()
         W =  NearestNeighbors(n_neighbors=11).fit(C).kneighbors_graph(C, mode='distance')
-        W[W>50]=0
+        W[W>40]=0
         W[W>0]=1
         W=W.todense()
     else:
@@ -59,15 +59,6 @@ def connectClusters(C,w=[],core_node=False,dthresh = 3000):
     #     W[nx[n],n] = 1.0        
     # return W # neighbors of each cluster and an affinity matrix
 
-def asblob(graphs,Y,slide):
-    feat_stack, edge_stack, labels=[],[],[]
-
-    for i,g in enumerate(graphs):
-        feat_stack.append(g.x)
-        edge_stack.append(g.edge_index)
-        labels.append(Y[i]*np.ones((g.x.shape[0],1)))
-
-
 def slide_fold(slide_inds):
     slides=np.unique(slide_inds)
     for s in slides:
@@ -93,7 +84,9 @@ def set_core_origin(X,core,core_cents,core_node=False):
     return X
 
 
-def mk_graph(p=Path('D:\QuPath_Projects\Meso_TMA\per_core_dets'), mode='TMA',to_use=None, use_res=True):
+def mk_nodes(p=Path('D:\QuPath_Projects\Meso_TMA\per_core_dets'), mode='TMA',to_use=None):
+    #instead of graphs as individual entities, return a set of nodes/edges that cover all cores
+    
     if not isinstance(p, Path):
         df=p[0]
         read_files=False
@@ -123,7 +116,7 @@ def mk_graph(p=Path('D:\QuPath_Projects\Meso_TMA\per_core_dets'), mode='TMA',to_
         to_use=[col for col in to_use if 'Delaunay' not in col]
         #to_use.append('Nucleus: Circularity')
         to_use=[col for col in to_use if 'Detection probability' not in col]
-        #to_use=[col for col in to_use if 'Smoothed' not in col]
+        to_use=[col for col in to_use if 'Smoothed' not in col]
         #to_use=[col for col in to_use if 'Median' not in col]
         to_use=[col for col in to_use if 'Cluster' not in col]
         #to_use=[col for col in to_use if 'Hematoxylin' not in col]
@@ -133,7 +126,7 @@ def mk_graph(p=Path('D:\QuPath_Projects\Meso_TMA\per_core_dets'), mode='TMA',to_
         #to_use=[col for col in to_use if 'Cell' not in col]
         #to_use=[col for col in to_use if 'Cytoplasm' not in col]
         #to_use=[col for col in to_use if 'Diameter' not in col]
-        #to_use=[col for col in to_use if 'Haralick' not in col]
+        to_use=[col for col in to_use if 'Haralick' not in col]
         '''to_use=['Nucleus: Circularity',
             'Nucleus: Area µm^2',
             'Hematoxylin: Nucleus: Mean',
@@ -147,7 +140,7 @@ def mk_graph(p=Path('D:\QuPath_Projects\Meso_TMA\per_core_dets'), mode='TMA',to_
     print(to_use)
     #to_use=res_cols
 
-    #use_res=True
+    use_res=True
     if use_res:
         res_cols=[f'res{i}' for i in range(512)]
         to_use=to_use+res_cols
@@ -217,7 +210,7 @@ def mk_graph(p=Path('D:\QuPath_Projects\Meso_TMA\per_core_dets'), mode='TMA',to_
     return graphs, Y, slide, to_use
 
 if __name__=='__main__':
-    mk_graph()
+    mk_nodes()
 
 
 
