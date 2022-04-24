@@ -5,7 +5,7 @@ from mk_graph import mk_graph
 from pathlib import Path
 import torch
 import numpy as np
-from gmil_edgeconv_cpath_old import GIN, getVisData, showGraphDataset, learnable_sig, change_pixel
+from MesoGraph_sep import GIN, getVisData, showGraphDataset, learnable_sig, change_pixel
 from torch.utils.data import DataLoader
 #from skimage.segmentation import flood, flood_fill
 from PIL import Image
@@ -41,7 +41,7 @@ for n,base_path in enumerate(base_paths[0:1]):
     base_path=Path(r'E:\Meso_TCGA\Slides_tiled\TCGA-SC-A6LN-01Z-00-DX1.379BF588-5A65-4BF8-84CF-5136085D8A47')
     if do_vis:
         save_path=base_path.joinpath('outputs_g')
-        save_path.mkdir()
+        #save_path.mkdir()
         mask_path=base_path.joinpath('masks')
         flist=list(mask_path.glob('*.tiff'))
         fnames,tcoords={},{}
@@ -59,7 +59,7 @@ for n,base_path in enumerate(base_paths[0:1]):
     dfs=[dfs[key] for key in dfs.keys() if key!='Image']
 
 
-    dataset, Y, slide, _ = mk_graph(dfs[0:], mode='WSI', to_use=to_use)
+    dataset, Y, slide, _ = mk_graph(dfs[0:], mode='WSI', to_use=to_use, use_res=False)
     #loader = DataLoader(dataset, shuffle=False)
 
     #model = GIN(dim_features=dataset[0].x.shape[1], dim_target=1, layers=[10,10,10,10,10,10],dropout = 0,pooling='mean',eps=100.0,train_eps=False, do_ls=True)
@@ -126,7 +126,7 @@ for n,base_path in enumerate(base_paths[0:1]):
             cv2.imwrite(str(save_path.joinpath(fnames[key]).with_suffix('.png')),im)
             #im.save(save_path.joinpath(key+'.jpg'))
         
-    np.savez(base_path.joinpath('graph.npz'),X=np.vstack(X_stack),W=np.vstack(W_stack),c=np.vstack(c_stack),cum_pts=np.array(cum_pts),it=np.vstack(it_stack))
+    np.savez(base_path.joinpath('graph.npz'),X=np.vstack(X_stack),W=np.vstack(W_stack),c=np.vstack(c_stack),cum_pts=np.array(cum_pts),it=np.vstack(it_stack), top_left=top_left)
 
 print('done!')
 #model = model.to('CUDA')

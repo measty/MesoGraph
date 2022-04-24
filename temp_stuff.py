@@ -4,7 +4,7 @@ from mk_graph import mk_graph
 from pathlib import Path
 import torch
 import numpy as np
-from gmil_edgeconv_cpath_old import GIN, getVisData, showGraphDataset, learnable_sig, change_pixel
+from gmil_edgeconv_cpath_sep import GIN, getVisData, showGraphDataset, learnable_sig, change_pixel
 from torch.utils.data import DataLoader
 from PIL import Image
 import cv2

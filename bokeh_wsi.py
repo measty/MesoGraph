@@ -459,8 +459,9 @@ p.add_tile(ts2)
 p.grid.grid_line_color=None
 
 circ_cmapper=linear_cmap(field_name='c', palette='RdYlGn11' ,low=0.001 ,high=1, high_color=(255,255,255,1) ,low_color=(255,255,255,1))
-nodes = p.circle('x', 'y', size=10, color=circ_cmapper, alpha=1.0, source = source)
-pat = p.patches('xs','ys', source=patch_source, fill_alpha=0.1, line_alpha=1.0)
+#nodes = p.circle('x', 'y', size=10, color=circ_cmapper, alpha=1.0, source = source)
+#pat = p.patches('xs','ys', source=patch_source, fill_alpha=0.1, line_alpha=1.0)
+nodes=None
 p.renderers[0].tile_source.max_zoom=8
 p.renderers[0].tile_source.max_zoom=8
 #p.renderers[0].tile_source.initial_resolution=4000

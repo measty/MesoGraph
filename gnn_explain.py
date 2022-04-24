@@ -5,7 +5,7 @@ from pathlib import Path
 import torch
 import math
 import numpy as np
-from gmil_edgeconv_cpath_old import GIN, getVisData, showGraphDataset, learnable_sig, change_pixel
+from MesoGraph_sep import GIN, getVisData, showGraphDataset, learnable_sig, change_pixel
 from torch.utils.data import DataLoader
 #from skimage.segmentation import flood, flood_fill
 from PIL import Image
