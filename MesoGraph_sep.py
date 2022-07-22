@@ -9,6 +9,7 @@ from bokeh.models.mappers import ColorMapper, LinearColorMapper
 from bokeh.models.sources import ColumnDataSource
 from bokeh.models.widgets.markups import Div
 from sympy import N
+from MesoGraph_split import Predict
 from mk_graph import USE_CUDA, mk_graph, slide_fold
 import numpy as np
 import matplotlib.pyplot as plt
@@ -1053,7 +1054,7 @@ def showGraphDataset(G,mode='bokeh'):
     
 
     
-def getVisData(data,model,device):
+def Predict(data,model,device):
     """
     Get a pytorch dataset for node representation based on model output
     The node feaures of the input data are replaced with model based node repn
@@ -1120,6 +1121,12 @@ def showImage(g,b=0,s=1):
         ZZ[i*32:(i+1)*32,j*32:(j+1)*32,:]=x*(vn[k])
     return ZZ,Z0
 #%%
+
+def save_preds(G):
+    save_df=pd.DataFrame(np.array(G.coords.cpu()), columns={'x','y'})
+    save_df[G.feat_names[0]]=np.array(G.x.cpu())
+    save_df[['score_E', 'score_S']]=np.array(G.v.cpu())
+    save_df.to_csv(Path(f'D:\Results\TMA_results\\node_preds_sep\GNN_scores_{G.core[0]}_{G.type_label[0]}.csv'))
 
 from scipy.spatial import Delaunay, KDTree
 from collections import defaultdict  
@@ -1208,12 +1215,12 @@ if __name__=='__main__':
     #loss_class = MulticlassClassificationLoss
     learning_rate = 0.00003
     weight_decay =0.05
-    epochs = 500
+    epochs = 400
     scheduler = None
     from sklearn.model_selection import StratifiedKFold, train_test_split
     skf = StratifiedKFold(n_splits=5,shuffle=True)
     #Vacc,Tacc=[],[]
-    visualize = 'plots' #'plots' #'pred'
+    visualize = 'pred' #'plots' #'pred'
 
     #added
     dataset,Y, slide, used_feats=mk_graph()
@@ -1223,10 +1230,10 @@ if __name__=='__main__':
     
     on_all=False
     va,ta=[],[]
-    for reps in range(3):
+    for reps in range(1):
         Vacc,Tacc=[],[]
         dfs=[]
-        i=0
+        m=0
         for trvi, test in slide_fold(slide):
             if on_all:
                 trvi=trvi+test
@@ -1270,15 +1277,17 @@ if __name__=='__main__':
             Tacc.append(tt_acc)
             print ("fold complete", len(Vacc),train_acc,val_acc,tt_acc)
 
-            torch.save(best_model,Path(f'D:\Results\TMA_results\models\\n11_fold_{i}.pt'))
-            i+=1
+            torch.save(best_model,Path(f'D:\Results\TMA_results\models\\n11_fold_{m}.pt'))
+            m+=1
             if visualize:
-                G, df=getVisData(test_dataset,net.model,net.device)
+                G, df=Predict(test_dataset,net.model,net.device)
                 df=add_missranked(df)
                 if visualize=='plots' and reps==0:
                     showGraphDataset(G)
                 dfs.append(df)
                 print('vis')
+                for key in G:
+                    save_preds(G[key])
 
         if visualize:
             pred_df=pd.concat(dfs,axis=0,ignore_index=True)

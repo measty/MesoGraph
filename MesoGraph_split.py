@@ -513,7 +513,7 @@ class NetWrapper:
             #    Z = (Z,)
             #loss, acc = self.loss_fun(Y, *Z)
             #loss = 0
-            auc_val = calc_roc_auc(torch.minimum(y,torch.ones(1, dtype=torch.int64).to(self.device)), torch.unsqueeze(Z[:,-1]/(Z[:,0]+0.00001),1))
+            auc_val = calc_roc_auc(torch.minimum(y,torch.ones(1, dtype=torch.int64).to(self.device)), torch.unsqueeze(Z[:,-1] - Z[:,0], 1))#torch.unsqueeze(Z[:,-1]/(Z[:,0]+0.00001),1))
             #pr = calc_pr(Y, *Z)
             return auc_val, loss#, auc, pr
         
@@ -1037,7 +1037,7 @@ def showGraphDataset(G):
     
 
     
-def getVisData(data,model,device):
+def Predict(data,model,device):
     """
     Get a pytorch dataset for node representation based on model output
     The node feaures of the input data are replaced with model based node repn
@@ -1102,6 +1102,12 @@ def showImage(g,b=0,s=1):
         ZZ[i*32:(i+1)*32,j*32:(j+1)*32,:]=x*(vn[k])
     return ZZ,Z0
 #%%
+
+def save_preds(G):
+    save_df=pd.DataFrame(np.array(G.coords.cpu()), columns={'x','y'})
+    save_df[G.feat_names[0]]=np.array(G.x.cpu())
+    save_df[['score_E', 'score_S']]=np.array(G.v.cpu())
+    save_df.to_csv(Path(f'D:\Results\TMA_results\\node_preds_split\GNN_scores_{G.core[0]}_{G.type_label[0]}.csv'))
 
 from scipy.spatial import Delaunay, KDTree
 from collections import defaultdict  
@@ -1188,41 +1194,48 @@ if __name__=='__main__':
     #%% MAIN TRAINING and VALIDATION
        
     #loss_class = MulticlassClassificationLoss
-    learning_rate = 0.0001
-    weight_decay =0.1
-    epochs = 5
+    learning_rate = 0.00005
+    weight_decay =0.02
+    epochs = 400
     scheduler = None
     from sklearn.model_selection import StratifiedKFold, train_test_split
     skf = StratifiedKFold(n_splits=5,shuffle=True)
     #Vacc,Tacc=[],[]
-    visualize = 'plots' #'plots' #'pred'
+    visualize = False #'plots' #'pred'
 
     #added
-    dataset,Y, slide, _=mk_graph()
+    #dataset,Y, slide, _=mk_graph()
+    dataset,Y, slide, _=mk_graph('mesobank')
+    test_dataset,Y_v, slide_v, _=mk_graph('meso') 
     print('made graphs, starting training..')
 
     #for trvi, test in skf.split(dataset, Y):
     
     va,ta=[],[]
-    for reps in range(5):
+    for reps in range(3):
         Vacc,Tacc=[],[]
         dfs=[]
-        for trvi, test in slide_fold(slide):
-            test_dataset=[dataset[i] for i in test]
+        m=0
+        for blah in range(1):
+            #for trvi, test in skf.split(dataset, Y): #trvi, test in slide_fold(slide):
+            #test_dataset=[dataset[i] for i in test]
             tt_loader = DataLoader(test_dataset, shuffle=True)
             
+            trvi = range(len(dataset))
             train, valid = train_test_split(trvi,test_size=0.25,shuffle=True,stratify=np.array(Y)[trvi])
             #train,valid = trvi, test
-            sampler = StratifiedSampler(class_vector=torch.from_numpy(np.array(Y)[train]),batch_size = 16)
+            sampler = StratifiedSampler(class_vector=torch.from_numpy(np.array(Y)[train]).cpu(),batch_size = 16)
             
             
             train_dataset=[dataset[i] for i in train]    
             #tr_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
-            tr_loader = DataLoader(train_dataset, batch_sampler = sampler)
-            valid_dataset=[dataset[i] for i in valid]    
+            valid_dataset=[dataset[i] for i in valid]
+              
             v_loader = DataLoader(valid_dataset, shuffle=True)
+            #sampler = StratifiedSampler(class_vector=torch.from_numpy(np.array(Y)[train_dataset]),batch_size = 16)
+            tr_loader = DataLoader(train_dataset, batch_sampler = sampler)
         
-            model = GIN(dim_features=dataset[0].x.shape[1], dim_target=2, layers=[10,10,10,10,10],dropout = 0,pooling='mean',eps=100.0,train_eps=False, do_ls=True)
+            model = GIN(dim_features=train_dataset[0].x.shape[1], dim_target=2, layers=[10,10,10,10,10],dropout = 0,pooling='mean',eps=100.0,train_eps=False, do_ls=True)
             net = NetWrapper(model, loss_function=None, device=device)
             model = model.to(device = net.device)
             optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
@@ -1245,13 +1258,18 @@ if __name__=='__main__':
             Vacc.append(val_acc)
             Tacc.append(tt_acc)
             print ("fold complete", len(Vacc),train_acc,val_acc,tt_acc)
+            torch.save(best_model,Path(f'D:\Results\TMA_results\models\\n11_fold_{m}.pt'))
+            m+=1
             if visualize:
-                G, df=getVisData(test_dataset,net.model,net.device)
+                G, df=Predict(test_dataset,net.model,net.device)
                 df=add_missranked(df)
                 if visualize=='plots' and reps==0:
                     showGraphDataset(G)
                 dfs.append(df)
                 print('vis')
+                for key in G:
+                    save_preds(G[key])
+                
 
         if visualize:
             pred_df=pd.concat(dfs,axis=0,ignore_index=True)
