@@ -6,7 +6,7 @@ Multiple Instance Graph Classification
 
 from bokeh.core.enums import Palette
 from bokeh.models.mappers import ColorMapper, LinearColorMapper
-from mk_graph import mk_graph, slide_fold
+from mk_graph_old import mk_graph, slide_fold
 import numpy as np
 import matplotlib.pyplot as plt
 import torch.nn as nn
@@ -233,7 +233,7 @@ class learnable_sig(torch.nn.Module):
             y.append(torch.sigmoid(x[batch==i,:]*(2+self.l2(xcore.T[:,i]))-self.l1(xcore.T[:,i])))
         return torch.cat(y)
 
-class GIN(torch.nn.Module):
+class MesoBranched(torch.nn.Module):
     def __init__(self, dim_features, dim_target, layers=[16],pooling='max',dropout = 0.0,eps=0.0,train_eps=False,do_ls=False):
         super(GIN, self).__init__()
         self.dropout = dropout

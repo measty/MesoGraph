@@ -7,8 +7,11 @@ from torch_geometric.data import Data
 import torch
 from sklearn.preprocessing import StandardScaler
 from split_detections import map_ind
+from tiatoolbox.annotation.storage import SQLiteStore
 
-USE_CUDA = torch.cuda.is_available()
+"""Graph generation from detected cells/objects for MesoGraph"""
+
+USE_CUDA = False #torch.cuda.is_available()
 device = {True:'cuda',False:'cpu'}[USE_CUDA] 
 def cuda(v):
     if USE_CUDA:
@@ -24,10 +27,10 @@ def toGeometricWW(X,W,y,tt=0):
 def connectClusters(C,w=[],core_node=False,dthresh = 3000):
     
     if len(w)==0:
-        #W =  NearestNeighbors(radius=30).fit(C).radius_neighbors_graph(C).todense()
+        #W =  NearestNeighbors(radius=15).fit(C).radius_neighbors_graph(C).todense()
         #W =  NearestNeighbors(n_neighbors=11).fit(C).kneighbors_graph(C).todense()
         W =  NearestNeighbors(n_neighbors=11).fit(C).kneighbors_graph(C, mode='distance')
-        W[W>40]=0
+        W[W>50]=0
         W[W>0]=1
         W=W.todense()
     else:
@@ -59,12 +62,21 @@ def connectClusters(C,w=[],core_node=False,dthresh = 3000):
     #     W[nx[n],n] = 1.0        
     # return W # neighbors of each cluster and an affinity matrix
 
+def asblob(graphs,Y,slide):
+    feat_stack, edge_stack, labels=[],[],[]
+
+    for i,g in enumerate(graphs):
+        feat_stack.append(g.x)
+        edge_stack.append(g.edge_index)
+        labels.append(Y[i]*np.ones((g.x.shape[0],1)))
+
+
 def slide_fold(slide_inds):
     slides=np.unique(slide_inds)
     for s in slides:
         yield [i for i, x in enumerate(slide_inds) if x!=s], [i for i, x in enumerate(slide_inds) if x==s]
 
-def set_core_origin(X,core,core_cents,core_node=False):
+def set_core_origin(X,core,core_cents,core_node=False, core_width=2854):
     um_per_pix=0.4415
     
     '''core_cents=[]
@@ -75,18 +87,24 @@ def set_core_origin(X,core,core_cents,core_node=False):
     core_cents.to_csv(Path('D:\QuPath_Projects\Meso_TMA\Dearrayed\core_cents.csv'))'''
 
     cent=core_cents[core_cents['Name']==core][['Centroid X µm', 'Centroid Y µm']].to_numpy()
-    top_left=cent-(2854/2)*um_per_pix
+    top_left=cent-(core_width/2)*um_per_pix
     X=(X-top_left)/um_per_pix
     if core_node:
         #add extra node at center
-        X=np.vstack((X,np.array([int(2854/2),int(2854/2)])))
+        X=np.vstack((X,np.array([int(core_width/2),int(core_width/2)])))
 
     return X
 
 
-def mk_nodes(p=Path('D:\QuPath_Projects\Meso_TMA\per_core_dets'), mode='TMA',to_use=None):
-    #instead of graphs as individual entities, return a set of nodes/edges that cover all cores
-    
+def mk_graph(dataset='meso', mode='TMA',to_use=None, use_res=False):
+    if dataset == 'meso':
+        p=Path(r'D:\QuPath_Projects\Meso_TMA\per_core_dets')
+        use_JL=True
+        core_width = 2854
+    else:
+        p=Path(r'D:\Mesobank_TMA\per_core_dets')
+        use_JL=False
+        core_width = 1462
     if not isinstance(p, Path):
         df=p[0]
         read_files=False
@@ -96,10 +114,10 @@ def mk_nodes(p=Path('D:\QuPath_Projects\Meso_TMA\per_core_dets'), mode='TMA',to_
         read_files=True
     core_node=True
     keep_level=1
-    use_JL=True
 
     if mode=='TMA':
-        core_cents=pd.read_csv(Path('D:\QuPath_Projects\Meso_TMA\Dearrayed\core_cents.csv'))
+        #core_cents=pd.read_csv(Path('D:\QuPath_Projects\Meso_TMA\Dearrayed\core_cents.csv'))
+        core_cents=pd.read_csv(p.parent/'core_cents.csv')
         JL_labels=pd.read_csv(Path('D:\Meso\JL_labels.csv'))
         pres=pd.read_csv(Path('D:\All_cores\core_labels_pres.csv'))
     else:
@@ -108,7 +126,8 @@ def mk_nodes(p=Path('D:\QuPath_Projects\Meso_TMA\per_core_dets'), mode='TMA',to_
 
     if to_use==None:
         columns=df.columns
-        to_use=columns[7:-1]
+        ind_preamble=list(columns).index('Centroid Y µm')
+        to_use=columns[ind_preamble+1:-1]
         to_use=[col for col in to_use if 'label' not in col]
         #to_use=[col for col in to_use if 'Circularity' not in col]
         #to_use=[col for col in to_use if 'diameter' not in col]
@@ -116,7 +135,7 @@ def mk_nodes(p=Path('D:\QuPath_Projects\Meso_TMA\per_core_dets'), mode='TMA',to_
         to_use=[col for col in to_use if 'Delaunay' not in col]
         #to_use.append('Nucleus: Circularity')
         to_use=[col for col in to_use if 'Detection probability' not in col]
-        to_use=[col for col in to_use if 'Smoothed' not in col]
+        #to_use=[col for col in to_use if 'Smoothed' not in col]
         #to_use=[col for col in to_use if 'Median' not in col]
         to_use=[col for col in to_use if 'Cluster' not in col]
         #to_use=[col for col in to_use if 'Hematoxylin' not in col]
@@ -126,7 +145,7 @@ def mk_nodes(p=Path('D:\QuPath_Projects\Meso_TMA\per_core_dets'), mode='TMA',to_
         #to_use=[col for col in to_use if 'Cell' not in col]
         #to_use=[col for col in to_use if 'Cytoplasm' not in col]
         #to_use=[col for col in to_use if 'Diameter' not in col]
-        to_use=[col for col in to_use if 'Haralick' not in col]
+        #to_use=[col for col in to_use if 'Haralick' not in col]
         '''to_use=['Nucleus: Circularity',
             'Nucleus: Area µm^2',
             'Hematoxylin: Nucleus: Mean',
@@ -149,9 +168,9 @@ def mk_nodes(p=Path('D:\QuPath_Projects\Meso_TMA\per_core_dets'), mode='TMA',to_
         dfs=[]
         for dets in det_list:
             #slide.append(map_ind(dets.stem))
-            dfs.append(pd.read_csv(dets))
+            #dfs.append(pd.read_csv(dets))
             if use_res:
-                res_feats=np.load(Path(r'D:\Meso\det_res_feats_snorm').joinpath(dfs[-1].Parent.iloc[0]+'.npy'))
+                res_feats=np.load(p.parent/'det_res_feats_snorm'/(dfs[-1].Parent.iloc[0]+'.npy'))
                 dfs[-1][res_cols]=res_feats[:,0:-2]       
     else:
         dfs=p
@@ -160,7 +179,7 @@ def mk_nodes(p=Path('D:\QuPath_Projects\Meso_TMA\per_core_dets'), mode='TMA',to_
     
     graphs,Y,slide=[],[],[]
     for df in dfs:
-        if mode=='TMA' and ((df.Parent.iloc[0] not in pres.Core.values) or pres[pres.Core==df.Parent.iloc[0]].Quality.values[0]>keep_level):
+        if mode=='TMA' and dataset == 'meso' and ((df.Parent.iloc[0] not in pres.Core.values) or pres[pres.Core==df.Parent.iloc[0]].Quality.values[0]>keep_level):
             continue
         if mode=='TMA':
             df=df[['Parent','Centroid X µm','Centroid Y µm']+to_use+['label']]#.dropna()
@@ -168,7 +187,7 @@ def mk_nodes(p=Path('D:\QuPath_Projects\Meso_TMA\per_core_dets'), mode='TMA',to_
         else:
             df=df[['Parent','Centroid X µm','Centroid Y µm']+to_use+['label','istumor']]#.dropna()
             df=df.fillna(df.mean())
-        if mode=='TMA': slide.append(map_ind(df.Parent.iloc[0]))
+        #if mode=='TMA': slide.append(map_ind(df.Parent.iloc[0]))
         X_xy=df[['Centroid X µm','Centroid Y µm']].to_numpy()/500
 
         if use_JL and df.Parent.iloc[0] in JL_labels.Core.values:
@@ -200,7 +219,7 @@ def mk_nodes(p=Path('D:\QuPath_Projects\Meso_TMA\per_core_dets'), mode='TMA',to_
         g.type_label=df.label.iloc[0]
         g.feat_names=to_use
         if mode=='TMA':
-            g.coords = toTensor(set_core_origin(df[['Centroid X µm','Centroid Y µm']].to_numpy(),g.core,core_cents, core_node))
+            g.coords = toTensor(set_core_origin(df[['Centroid X µm','Centroid Y µm']].to_numpy(),g.core,core_cents, core_node, core_width))
         else:
             g.coords = toTensor(df[['Centroid X µm','Centroid Y µm']].to_numpy())
             g.istumor=df['istumor'].to_numpy()
@@ -210,7 +229,7 @@ def mk_nodes(p=Path('D:\QuPath_Projects\Meso_TMA\per_core_dets'), mode='TMA',to_
     return graphs, Y, slide, to_use
 
 if __name__=='__main__':
-    mk_nodes()
+    mk_graph()
 
 
 

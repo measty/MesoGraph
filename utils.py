@@ -5,54 +5,95 @@ Created on Sun Aug 30 14:15:25 2020
 
 @author: u1876024
 """
-
-
 import numpy as np
-import matplotlib.pyplot as plt
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-from torch.autograd import Variable
 import torch
-from torch.utils.data import Dataset, DataLoader
-import torch.utils.data as data_utils
-from torchvision import datasets, transforms
-from copy import deepcopy
-from numpy.random import randn #importing randn
-from torch.nn import BatchNorm1d
-from torch.nn import Sequential, Linear, ReLU,Tanh
-from torch_geometric.nn import GINConv,EdgeConv, DynamicEdgeConv,global_add_pool, global_mean_pool, global_max_pool
-import time
-from tqdm import tqdm
-from scipy.spatial import distance_matrix, Delaunay
-import random
-from torch_geometric.data import Data, DataLoader
 import pickle
+import math
+
+"""Various utility functions for working with MesoGraph models"""
+
 USE_CUDA = torch.cuda.is_available()
 device = {True:'cuda',False:'cpu'}[USE_CUDA] 
+
 def cuda(v):
     if USE_CUDA:
         return v.cuda()
     return v
+
 def toTensor(v,dtype = torch.float,requires_grad = True):
     return cuda(torch.from_numpy(np.array(v)).type(dtype).requires_grad_(requires_grad))
+
 def toNumpy(v):
     if type(v) is not torch.Tensor: return np.asarray(v)
     if USE_CUDA:
         return v.detach().cpu().numpy()
     return v.detach().numpy()
+
 def pickleLoad(ifile):
     with open(ifile, "rb") as f:
         return pickle.load(f)
+
 def pickleSave(ofile,obj):
     with open(ofile, "wb") as f:
         pickle.dump( obj, f )
     
-def toGeometric(Gb,y,tt=1e-3):
-    """
-    Create pytorch geometric object based on GraphFit Object
-    """
-    return Data(x=Gb.X, edge_index=(Gb.getW()>tt).nonzero().t().contiguous(),y=y)
+def add_missranked(df):
+    """for each core, calculates over all the cores with a different label, the
+    proportion of those cores which are ranked by score opposite to that which
+    would be expecteed by label."""
+    df.set_index('core')
+    miss=[]
+    for core in df.index:
+        lab,s=df.loc[core,'label'],df.loc[core,'GNN']
+        miss.append((df[np.logical_and(df['label'].values<lab, df['GNN'].values>s)].shape[0]+df[np.logical_and(df['label'].values>lab, df['GNN'].values<s)].shape[0])/sum(df['label'].values!=lab))
+    df['miss']=miss
+    return df
 
-def toGeometricWW(X,W,y,tt=0):    
-    return Data(x=toTensor(X,requires_grad = False), edge_index=(toTensor(W,requires_grad = False)>tt).nonzero().t().contiguous(),y=toTensor([y],dtype=torch.long,requires_grad = False))
+def map_ind(ind, dataset='mesobank'):
+    #maps core ind to slide
+    if isinstance(ind, str):
+        ind=int(ind.split('-')[0])
+    if dataset == 'mesobank':
+        if ind<3 or ind>49:
+            raise ValueError('ind is not a valid core')
+        if ind<26:
+            slide=0
+        else:
+            slide=1
+        return slide
+    
+
+    slide_offsets=[3,13,25,37]
+    if ind<3 or ind>44:
+        raise ValueError('ind is not a valid core')
+    if ind<13:
+        slide=0
+    elif ind<25:
+        slide=1
+    elif ind<37:
+        slide=2
+    else:
+        slide=3
+    return slide
+
+def get_short_names(used_feats):
+    short_names=[]
+    for f in used_feats:
+        if 'Smoothed' in f:
+            short_names.append(': '.join(['Smoothed']+f.split(': ')[2:]))
+        elif 'Circle: Diameter' in f:
+            if 'Haralick' in f:
+                short_names.append(': '.join(['Haralick']+[f.split(': ')[3]]+[f[-5:]]))
+            else:
+                app = f[-5:]
+                if app == '.dev.':
+                    app = 'Std.dev.'
+                short_names.append(': '.join([f.split(': ')[3]]+[app]))
+        elif 'ROI' in f:
+            short_names.append(': '.join(['ROI']+[f.split(': ')[2]]+[f[-5:]]))
+        else:
+            short_names.append(f)
+        if len(short_names[-1])>28:
+            split_n=short_names[-1].split(': ')
+            short_names[-1]=': '.join(split_n[0:math.ceil(len(split_n)/2)]) + '\n' + ': '.join(split_n[math.ceil(len(split_n)/2):])
+    return short_names

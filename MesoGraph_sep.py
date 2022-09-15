@@ -10,7 +10,7 @@ from bokeh.models.sources import ColumnDataSource
 from bokeh.models.widgets.markups import Div
 from sympy import N
 from MesoGraph_split import Predict
-from mk_graph import USE_CUDA, mk_graph, slide_fold
+from mk_graph_old import USE_CUDA, mk_graph, slide_fold
 import numpy as np
 import matplotlib.pyplot as plt
 import torch.nn as nn
@@ -237,7 +237,7 @@ class learnable_sig(torch.nn.Module):
             y.append(torch.sigmoid(x[batch==i,:]*(2+self.l2(xcore.T[:,i]))-self.l1(xcore.T[:,i])))
         return torch.cat(y)
 
-class GIN(torch.nn.Module):
+class MesoSep(torch.nn.Module):
     def __init__(self, dim_features, dim_target, layers=[16],pooling='max',dropout = 0.0,eps=0.0,train_eps=False,do_ls=False,feats=[]):
         super(GIN, self).__init__()
         self.dropout = dropout

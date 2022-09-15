@@ -1,11 +1,11 @@
 import torch.nn as nn
 from torchaudio import datasets
-from mk_graph import mk_graph
+from mk_graph import mk_graphs
 from pathlib import Path
 import torch
 import math
 import numpy as np
-from MesoGraph_sep import GIN, getVisData, showGraphDataset, learnable_sig, change_pixel
+from meso_models import MesoBranched, MesoSep
 from torch.utils.data import DataLoader
 #from skimage.segmentation import flood, flood_fill
 from PIL import Image
@@ -13,14 +13,52 @@ import cv2
 import pandas as pd
 from split_detections import split_det
 import copy
+import pickle
 import matplotlib.pyplot as plt
 import sys
-from graph_utils import label_dets_from_heatmap
 from torch_geometric.nn.models import GNNExplainer
+from bokeh.layouts import row
 from bokeh.io import show
 from bokeh.plotting import figure
+from sklearn.feature_selection import SelectKBest
+from sklearn.feature_selection import chi2, mutual_info_regression, f_regression
+
+
+"""Functions to facilitate GNNexplainer interpretation of MesoGraph models"""
 
 sys.setrecursionlimit(10**4)
+
+def sort_feats(xdf, feat_names, stat=mutual_info_regression):
+    feat_sel=SelectKBest(stat, k=20)
+    feat_sel.fit(xdf[feat_names].values,xdf['score'].values)
+    f_scores=feat_sel.scores_
+    inds=np.argsort(f_scores)
+    sort_feats=np.flip(feat_names[inds])
+    return list(sort_feats)
+
+def explain_net(core,node_idx=None,N=10, type='feature'):
+    explainer = GNNExplainer(model, epochs=200, num_hops=3, return_type='raw', feat_mask_type=type)
+    #core=dataset[5]
+    x = core.x
+    edge_index= core.edge_index
+    #node_feat_mask, edge_mask = explainer.explain_node(node_idx, x, edge_index)
+    node_feat_mask, edge_mask = explainer.explain_graph(x, edge_index)
+    if type=='scalar':
+        return node_feat_mask
+    if type=='feature':
+        topN=np.flipud(np.argsort(node_feat_mask.to('cpu')))[:N]
+        topN_score=node_feat_mask.cpu().numpy()[topN]
+    elif type=='individual features':
+        topN=np.fliplr(np.argsort(node_feat_mask.to('cpu'),axis=1))[:,:N]
+        topN_score=np.vstack([node_feat_mask.cpu().numpy()[i,topN[i,:]] for i in range(topN.shape[0])])
+    #node_imp=[np.mean(edge_mask[np.any((edge_index.T==n).cpu().numpy(), axis=1)].cpu().numpy()) for n in range(x.shape[0])]
+
+    #im=plt.imread(f'D:\All_cores\{core.core}.jpg') 
+    #plt.imshow(im)                                                
+    #ax, G = explainer.visualize_subgraph(node_idx, edge_index, edge_mask, threshold=0.5)
+    #plt.show()
+
+    return topN, topN_score#, node_imp
 
 def get_top_feats(feat_imp,used_feats):
     feat_order=np.fliplr(np.argsort(feat_imp)[None,:])
@@ -53,7 +91,7 @@ def make_chart(feat_imp,used_feats,txt,type='box'):
         upper = np.minimum(qs[2,:] + 1.5*iqr, np.max(feat_imp,axis=0))
         lower = np.maximum(qs[0,:] - 1.5*iqr, np.min(feat_imp,axis=0))
 
-        p = figure(tools="", background_fill_color="#efefef", y_range=top_feats, toolbar_location=None, height=500, width=400)
+        p = figure(tools="", title=f"Top feats: {txt}", background_fill_color="#efefef", y_range=top_feats, toolbar_location=None, height=500, width=400)
 
         # stems
         p.segment(upper, top_feats, qs[2,:], top_feats, line_color="black")
@@ -66,7 +104,7 @@ def make_chart(feat_imp,used_feats,txt,type='box'):
         # whiskers (almost-0 height rects simpler than segments)
         p.rect(lower, top_feats, 0.01, 0.2, line_color="black")
         p.rect(upper, top_feats, 0.01, 0.2, line_color="black")
-        show(p)
+        return p
 
 
 to_use=None
@@ -91,7 +129,9 @@ dfs=[dfs[key] for key in dfs.keys() if key!='Image']
 
 #dataset, Y, slide, _ = mk_graph(dfs[0:], mode='WSI', to_use=to_use)
 #dataset,Y, slide, used_feats=mk_graph(to_use=to_use)
-dataset,Y, slide, used_feats=mk_graph()
+dataset,Y, slide, used_feats=mk_graphs(dataset='meso', load_graphs='graphs_no_cell')
+feat_names = used_feats
+make_charts = True
 
 short_names=[]
 for f in used_feats:
@@ -101,22 +141,26 @@ for f in used_feats:
         if 'Haralick' in f:
             short_names.append(': '.join(['Haralick']+[f.split(': ')[3]]+[f[-5:]]))
         else:
-            short_names.append(': '.join([f.split(': ')[3]]+[f[-5:]]))
+            app = f[-5:]
+            if app == '.dev.':
+                app = 'Std.dev.'
+            short_names.append(': '.join([f.split(': ')[3]]+[app]))
     elif 'ROI' in f:
         short_names.append(': '.join(['ROI']+[f.split(': ')[2]]+[f[-5:]]))
     else:
         short_names.append(f)
-    if len(short_names[-1])>28:
+    if len(short_names[-1])>25:
         split_n=short_names[-1].split(': ')
         short_names[-1]=': '.join(split_n[0:math.ceil(len(split_n)/2)]) + '\n' + ': '.join(split_n[math.ceil(len(split_n)/2):])
 
 
 used_feats=short_names
+model = torch.load(r'D:\Results\TMA_results\test_run24\\model_fold_0_r2.pt')
 
-feat_imp=[]
-for i in range(1):
-    model = torch.load(f'D:\\Results\\TMA_results\\models\\n11_fold_{0}.pt')
-    explainer = GNNExplainer(model, epochs=200, num_hops=5, return_type='raw', feat_mask_type='feature')
+if make_charts:
+    feat_imp=[]
+        
+    explainer = GNNExplainer(model, epochs=200, num_hops=4, return_type='raw', feat_mask_type='feature')
     node_idx = 10
     for core in dataset:
         #core=dataset[5]
@@ -126,14 +170,54 @@ for i in range(1):
         node_feat_mask, edge_mask = explainer.explain_graph(x, edge_index)
         feat_imp.append(node_feat_mask.cpu())
 
-Y=np.array(Y)
-#Y=np.tile(Y,4)
-feat_imps=np.array(np.vstack(feat_imp))
+    Y=np.array(Y)
+    #Y=np.tile(Y,4)
+    feat_imps=np.array(np.vstack(feat_imp))
 
-make_chart(feat_imps,used_feats,'All')
-make_chart(feat_imps[Y==0,:],used_feats,'Epithelioid')
-make_chart(feat_imps[Y==1,:],used_feats,'Biphasic')
-make_chart(feat_imps[Y==2,:],used_feats,'Sarcomatoid')
+    p1 = make_chart(feat_imps,used_feats,'All')
+    p2 = make_chart(feat_imps[Y==0,:],used_feats,'Epithelioid')
+    p3 = make_chart(feat_imps[Y==1,:],used_feats,'Biphasic')
+    p4 = make_chart(feat_imps[Y==2,:],used_feats,'Sarcomatoid')
+    #show the plots in a row
+    show(row(p1,p2,p3,p4))
+
+
+#per node feature importances
+explainer_output={}
+for core in dataset:
+    explainer_output[core.core]={}
+    topN, topN_score = explain_net(core, type='feature')
+    #feat_df=pd.DataFrame(node_imp, columns=['imp'])
+    #top_feats,top_scores=[],[]
+    #for k in range(topN.shape[0]):
+        #top_str='\r\n'.join(feat_names[topN[k,:]])
+        #top_feats.append(top_str)
+        #top_feats.append(np.array(used_feats)[topN[k,:]])
+        #top_scores.append(topN_score[k,:])
+
+    explainer_output[core.core]['top_feats']=[short_names[i] for i in topN]
+    explainer_output[core.core]['top_scores']=topN_score
+    #explainer_output[core.core]['node_imp']=node_imp
+    #feat_df['top_feats']=top_feats
+    #feat_df['top_scores']=top_scores
+    #sorted_feats=['imp','top_feats']
+
+"""
+explainer = GNNExplainer(model, epochs=200, num_hops=5, return_type='raw', feat_mask_type='scalar')
+#node importances
+#node_imp = {}
+for core in dataset:
+    #core=dataset[5]
+    x = core.x
+    edge_index= core.edge_index
+    #node_feat_mask, edge_mask = explainer.explain_node(node_idx, x, edge_index)
+    node_feat_mask, edge_mask = explainer.explain_graph(x, edge_index)
+    explainer_output[core.core]['node_imp'] = node_feat_mask.cpu()
+"""
+
+#save here...
+with open(r'D:\Results\TMA_results\test_run24\explainer_output.pkl', 'wb') as f:
+    pickle.dump(explainer_output, f)
 
 vis=False
 if vis:
