@@ -290,7 +290,7 @@ for f in used_feats:
 
 used_feats = short_names
 # model_path = r'D:\Results\TMA_results\test_run23\\model_fold_0_r2.pt'
-model_path = r"D:\Results\heba_results\test_run8\\model_fold_0_r0.pt"
+model_path = r"D:\Results\heba_results\test_run10\\model_fold_0_r0.pt"
 model = torch.load(model_path)
 
 if make_charts:

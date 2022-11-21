@@ -68,7 +68,7 @@ def add_missranked(df):
 
 
 def map_ind(ind, dataset="mesobank"):
-    # maps core ind to slide
+    # maps core ind to slide ind
     if isinstance(ind, str):
         ind = int(ind.split("-")[0])
     if dataset == "mesobank":
@@ -95,6 +95,7 @@ def map_ind(ind, dataset="mesobank"):
 
 
 def get_short_names(used_feats):
+    """Shortens feature names for plotting"""
     short_names = []
     for f in used_feats:
         if "Smoothed" in f:

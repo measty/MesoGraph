@@ -69,7 +69,6 @@ if __name__ == "__main__":
     scheduler = "cyclic"
     opt = "adam"  # sgd or adam
     skf = StratifiedKFold(n_splits=5, shuffle=True)
-    # Vacc,Tacc=[],[]
     visualize = "pred"  #'plots' #'pred' or False
     split_strat = "cross_val"  # slide_fold or cross_val
     model_type = "branched"  #'branched' or 'separate'
@@ -78,12 +77,14 @@ if __name__ == "__main__":
     base_path.mkdir(exist_ok=True)
     load_graphs = "heba"
     use_res = True
+    # dataset list: if two given, will train on first and test on second.
+    # otherwise, will use split_strat to split dataset into train/test
     dataset_list = ["heba"]
     dim_target = 2
     layers = [20, 10, 10]
     dropout = 0
     do_ls = True
-    notes = "ls v3, 1st 60 feats only"
+    notes = ""
     info_str = f"""folder={base_path.name},lr={learning_rate},wd={weight_decay},epochs={epochs},scheduler={scheduler},split_strat={split_strat},load_graphs={load_graphs},
         model_type={model_type},dataset_list={dataset_list},dim_target={dim_target},layers={layers},dropout={dropout},do_ls={do_ls},opt={opt},use_res={use_res},notes={notes}"""
     split_dataset = False

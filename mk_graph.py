@@ -158,10 +158,6 @@ def mk_graphs(dataset="meso", to_use=None, use_res=True, load_graphs="graphs"):
                     g = pickle.load(f)
             else:
                 g = gr
-            # just to do heba first 60 feats - remove later
-            # if dataset == 'heba':
-            # g.x = g.x[:,0:60]
-            # g.feat_names = g.feat_names[0:60]
             graphs.append(g)
             if "meso" in dataset:
                 slide.append(map_ind(g.core.split("_")[0], dataset))
