@@ -43,16 +43,6 @@ class StratifiedSampler(Sampler):
         return [
             tidx for _, tidx in skf.split(idx, YY)
         ]  # return array of arrays of indices in each batch
-        # #Binary sampling: Returns a pair index of positive and negative index-All samples from majority class are paired with repeated samples from minority class
-        # U, C = np.unique(YY, return_counts=True)
-        # M = U[np.argmax(C)]
-        # Midx = np.nonzero(YY==M)[0]
-        # midx = np.nonzero(YY!=M)[0]
-        # midx_ = np.random.choice(midx,size=len(Midx))
-        # if M>0: #if majority is positive
-        #     return np.vstack((Midx,midx_)).T
-        # else:
-        #     return np.vstack((midx_,Midx)).T
 
     def __iter__(self):
         return iter(self.gen_sample_array())
@@ -65,26 +55,27 @@ if __name__ == "__main__":
     # parameters
     learning_rate = 0.00005
     weight_decay = 0.02
-    epochs = 200
+    epochs = 300
     scheduler = "cyclic"
     opt = "adam"  # sgd or adam
     skf = StratifiedKFold(n_splits=5, shuffle=True)
-    visualize = "pred"  #'plots' #'pred' or False
-    split_strat = "cross_val"  # slide_fold or cross_val
+    save_res = "core"  #'core', 'node' or False
+    # core will save only core-level predictions, node will additionally save node-level predictions.
+    split_strat = "slide_fold"  # slide_fold or cross_val
     model_type = "branched"  #'branched' or 'separate'
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    base_path = Path(r"D:\Results\heba_results\test_run10")
+    base_path = Path(r"D:\Results\test_run") #where to save results
     base_path.mkdir(exist_ok=True)
-    load_graphs = "heba"
-    use_res = True
+    load_graphs = None # Path(r"D:\QuPath_Projects\Meso_TMA\detections\graphs") # or None to generate graphs
+    use_res = True #no effect if loading graphs
     # dataset list: if two given, will train on first and test on second.
     # otherwise, will use split_strat to split dataset into train/test
-    dataset_list = ["heba"]
+    dataset_list = ["meso"]
     dim_target = 2
     layers = [20, 10, 10]
     dropout = 0
     do_ls = True
-    notes = ""
+    notes = ""   # notes to add to info file
     info_str = f"""folder={base_path.name},lr={learning_rate},wd={weight_decay},epochs={epochs},scheduler={scheduler},split_strat={split_strat},load_graphs={load_graphs},
         model_type={model_type},dataset_list={dataset_list},dim_target={dim_target},layers={layers},dropout={dropout},do_ls={do_ls},opt={opt},use_res={use_res},notes={notes}"""
     split_dataset = False
@@ -101,11 +92,12 @@ if __name__ == "__main__":
         test_dataset, slide_t, Y_t, _ = mk_graphs(
             dataset_list[1], load_graphs=load_graphs, use_res=use_res
         )
-        tr_test_split = [(1, 1)]  # dummy split
+        tr_test_split = [(1, 1)]  # dummy split, as separate test dataset given
     print("made graphs, starting training..")
 
     va, ta = [], []
-    for reps in range(3):
+    nreps = 1
+    for reps in range(nreps):
         Vacc, Tacc = [], []
         dfs = []
         m = 0
@@ -115,7 +107,6 @@ if __name__ == "__main__":
             else:
                 tr_test_split = skf.split(dataset, Y)
         for tr, te in tr_test_split:
-            # for trvi, test in skf.split(dataset, Y): #trvi, test in slide_fold(slide):
             if split_dataset:
                 test_dataset = [dataset[i] for i in te]
             tt_loader = DataLoader(test_dataset, shuffle=True)
@@ -130,11 +121,9 @@ if __name__ == "__main__":
             )
 
             train_dataset = [dataset[i] for i in train]
-            # tr_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
             valid_dataset = [dataset[i] for i in valid]
 
             v_loader = DataLoader(valid_dataset, shuffle=True)
-            # sampler = StratifiedSampler(class_vector=torch.from_numpy(np.array(Y)[train_dataset]),batch_size = 16)
             tr_loader = DataLoader(train_dataset, batch_sampler=sampler)
 
             if model_type == "branched":
@@ -197,8 +186,6 @@ if __name__ == "__main__":
                     cycle_momentum=True,
                 )
 
-            # if visualize: showGraphDataset(getVisData(test_dataset,net.model,net.device));#1/0
-
             (
                 best_model,
                 train_loss,
@@ -224,19 +211,21 @@ if __name__ == "__main__":
             print("fold complete", len(Vacc), train_acc, val_acc, tt_acc)
             torch.save(best_model, base_path / f"model_fold_{m}_r{reps}.pt")
             m += 1
-            if visualize:
+            if save_res:
+                # get preds
                 (Path(net.save_dir) / "node_preds").mkdir(exist_ok=True)
                 # gets node preds in G and core preds in df
                 G, df = net.predict(test_dataset, best_model)
                 df["fold"] = m
                 df = add_missranked(df)
-                if visualize == "plots" and reps == 0:
-                    net.showGraphDataset(G)  # not needed now
                 dfs.append(df)
+            if save_res == "node":
+                # save node preds
                 for key in G:
                     net.save_preds(G[key], include_feats=False)
 
-        if visualize:
+        if save_res:
+            # save core preds
             pred_df = pd.concat(dfs, axis=0, ignore_index=True)
             pred_df.to_csv(base_path / f"GNN_class_temp_dual_r{reps}.csv")
         print("avg Valid acc=", np.mean(Vacc), "+/", np.std(Vacc))

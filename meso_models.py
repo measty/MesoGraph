@@ -27,18 +27,15 @@ from torch_geometric.data import Data, DataLoader
 class learnable_sig(torch.nn.Module):
     def __init__(self, fsize, type="branched") -> None:
         super(learnable_sig, self).__init__()
-        # self.l1=nn.Linear(fsize,1)
         if type == "branched":
             self.l1 = Sequential(Linear(fsize, fsize), ReLU(), Linear(fsize, 2))
             self.l2 = Sequential(Linear(fsize, fsize), ReLU(), Linear(fsize, 2))
-            # self.first_h=PANConv(dim_features, out_emb_dim,5)
             self.alpha = nn.parameter.Parameter(2 * torch.ones(1, 2))
             self.beta = nn.parameter.Parameter(torch.zeros(1, 2))
             self.gamma = nn.parameter.Parameter(torch.zeros(1, 2))
         else:
             self.l1 = Sequential(Linear(fsize, fsize), ReLU(), Linear(fsize, 1))
             self.l2 = Sequential(Linear(fsize, fsize), ReLU(), Linear(fsize, 1))
-            # self.first_h=PANConv(dim_features, out_emb_dim,5)
             self.alpha = nn.parameter.Parameter(torch.ones(1))
             self.beta = nn.parameter.Parameter(torch.zeros(1))
             self.gamma = nn.parameter.Parameter(torch.zeros(1))
@@ -52,7 +49,7 @@ class learnable_sig(torch.nn.Module):
             # y.append(torch.sigmoid(x[batch==i,:]-self.beta))
             y.append(torch.sigmoid(x[batch == i, :] - self.l1(xcore.T[:, i])))
             # y.append(torch.sigmoid(x[batch==i,:]*self.alpha-0.1*self.l1(xcore.T[:,i])))
-            # y.append(torch.sigmoid(x[batch==i,:]*(0.5+self.l2(xcore.T[:,i]))-self.l1(xcore.T[:,i])))
+            # y.append(torch.sigmoid(x[batch==i,:]*self.l2(xcore.T[:,i])-self.l1(xcore.T[:,i])))
         return torch.cat(y)
 
 
@@ -112,14 +109,9 @@ class MesoBranched(torch.nn.Module):
                     BatchNorm1d(out_emb_dim),
                     ReLU(),
                 )
-                # self.first_h=PANConv(dim_features, out_emb_dim,5)
-                # self.linears.append(Linear(dim_features, dim_target))
                 self.linears.append(Linear(out_emb_dim, dim_target))
             else:
                 input_emb_dim = self.embeddings_dim[layer - 1]
-                # self.nns.append(Sequential(Linear(input_emb_dim, out_emb_dim), BatchNorm1d(out_emb_dim), ReLU(),
-                #                       Linear(out_emb_dim, out_emb_dim), BatchNorm1d(out_emb_dim), ReLU()))
-                # self.convs.append(GINConv(self.nns[-1], eps=eps, train_eps=train_eps))  # Eq. 4.2
 
                 self.linears.append(Linear(out_emb_dim, dim_target))
 
@@ -136,13 +128,8 @@ class MesoBranched(torch.nn.Module):
 
                 self.ecs.append(
                     EdgeConv(self.ecnns[-1], aggr="mean")
-                )  # DynamicEdgeConv#EdgeConv
-                # self.ecs.append(GINConv(self.ecnns[-1]))
-                # self.ecs.append(DynamicEdgeConv(self.ecnns[-1],k=10,aggr='mean',num_workers=8))
+                ) 
 
-        # self.first_h = torch.nn.ModuleList(self.first_h)
-        # self.nns = torch.nn.ModuleList(self.nns)
-        # self.convs = torch.nn.ModuleList(self.convs)
         self.linears = torch.nn.ModuleList(
             self.linears
         )  # has got one more for initial input
@@ -151,8 +138,7 @@ class MesoBranched(torch.nn.Module):
         self.ecs = torch.nn.ModuleList(self.ecs)
 
     def forward(self, x, edge_index=None, edge_weight=None, batch=None):
-        # Implement Equation 4.2 of the paper i.e. concat all layers' graph representations and apply linear model
-        # note: this can be decomposed in one smaller linear model per layer
+        
         if edge_index == None:
             xfeat, edge_index, batch = x.x, x.edge_index, x.batch
             explaining = False
@@ -187,8 +173,6 @@ class MesoBranched(torch.nn.Module):
                 # dout=global_mean_pool(dout[0],dout[3])
                 # out += dout
             else:
-                # Layer l ("convolution" layer)
-                # import pdb;pdb.set_trace()
                 # x = self.convs[layer-1](x, edge_index)
                 x = self.ecs[layer - 1](x, edge_index)
                 if self.do_ls:
@@ -284,14 +268,9 @@ class MesoSep(torch.nn.Module):
                     BatchNorm1d(out_emb_dim),
                     ReLU(),
                 )
-                # self.first_h=PANConv(dim_features, out_emb_dim,5)
-                # self.linears.append(Linear(dim_features, dim_target))
                 linears.append(Linear(out_emb_dim, 1))
             else:
                 input_emb_dim = self.embeddings_dim[layer - 1]
-                # self.nns.append(Sequential(Linear(input_emb_dim, out_emb_dim), BatchNorm1d(out_emb_dim), ReLU(),
-                #                       Linear(out_emb_dim, out_emb_dim), BatchNorm1d(out_emb_dim), ReLU()))
-                # self.convs.append(GINConv(self.nns[-1], eps=eps, train_eps=train_eps))  # Eq. 4.2
 
                 linears.append(Linear(out_emb_dim, 1))
 
@@ -306,20 +285,13 @@ class MesoSep(torch.nn.Module):
 
                 ecnns.append(subnet)
 
-                ecs.append(EdgeConv(ecnns[-1], aggr="mean"))  # DynamicEdgeConv#EdgeConv
-                # ecs.append(GINConv(ecnns[-1]))
-                # self.ecs.append(DynamicEdgeConv(self.ecnns[-1],k=10,aggr='mean',num_workers=8))
-
-        # self.first_h = torch.nn.ModuleList(self.first_h)
-        # self.nns = torch.nn.ModuleList(self.nns)
-        # self.convs = torch.nn.ModuleList(self.convs)
+                ecs.append(EdgeConv(ecnns[-1], aggr="mean"))  
         linears = torch.nn.ModuleList(linears)  # has got one more for initial input
 
         ecnns = torch.nn.ModuleList(ecnns)
         ecs = torch.nn.ModuleList(ecs)
         if self.do_ls:
             ls = learnable_sig(self.dim_features, type="sep")
-            # ls=learnable_sig(np.sum(self.embeddings_dim))
             return nn.ModuleDict(
                 {
                     "first": first_h,
@@ -334,8 +306,6 @@ class MesoSep(torch.nn.Module):
         )
 
     def forward_sub(self, sub, data, edge_index=None, edge_weight=None):
-        # Implement Equation 4.2 of the paper i.e. concat all layers' graph representations and apply linear model
-        # note: this can be decomposed in one smaller linear model per layer
         if edge_index == None:
             xfeat, edge_index, batch = data.x, data.edge_index, data.batch
         else:
@@ -352,7 +322,7 @@ class MesoSep(torch.nn.Module):
 
         core_x = []
         for layer in range(self.no_layers):
-            # print(f'Forward: layer {l}')
+            
             if layer == 0:
                 # x, M = self.first_h(x, edge_index)
                 x = sub["first"](xfeat)

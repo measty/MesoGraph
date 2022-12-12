@@ -94,7 +94,6 @@ def graph_from_db(db_path, to_use, core_node=True, use_res=False):
     from a TMA core.
     """
     SQ = SQLiteStore(db_path)
-    # props = SQ.pquery("*", unique=False)
     props = [ann.properties for ann in SQ.values()]
     df = pd.DataFrame(props)
 
@@ -134,19 +133,33 @@ def graph_from_db(db_path, to_use, core_node=True, use_res=False):
     return g, to_use
 
 
-def mk_graphs(dataset="meso", to_use=None, use_res=True, load_graphs="graphs"):
+def mk_graphs(dataset="meso", to_use=None, use_res=True, load_graphs=None):
+    """Construct graphs from annotation stores of cell detections, or load
+    pre-constructed graphs from pickle files.
+    
+    Args:
+        dataset (str, optional): Dataset to use. Defaults to "meso".
+        to_use (list, optional): List of features to use. If not provided, will
+            use all features.
+        use_res (bool, optional): Whether to use resnet features.
+        load_graphs (str, optional): Path to folder containing pre-constructed
+            graphs. If not provided, will construct graphs from scratch.
+    Returns:
+        graphs (list): List of graphs.
+        slide (list): List of slide indices.
+        Y (list): List of labels.
+        to_use (list): List of features used.
+    """
     core_node = True
     if dataset == "meso":
         p = Path(r"D:\QuPath_Projects\Meso_TMA\detections\stores")
     elif dataset == "mesobank":
         p = Path(r"D:\Mesobank_TMA\mesobank_proj\detections\stores")
-    elif dataset == "heba":
-        p = Path(r"D:\TestGCN\heba")
     if load_graphs:
         graphs = []
         slide, Y = [], []
         needs_load = True
-        gr_list = list((p.parent / load_graphs).glob("*.pkl"))
+        gr_list = list(load_graphs.glob("*.pkl"))
         if len(gr_list) == 1:
             # all the graphs are in one file
             with open(gr_list[0], "rb") as f:
@@ -169,35 +182,19 @@ def mk_graphs(dataset="meso", to_use=None, use_res=True, load_graphs="graphs"):
     props = SQ.pquery("*", unique=False)
     df = pd.DataFrame.from_dict(props, orient="index")
 
+    df_columns_to_ignore = ["label", "Length", "Delaunay", "Detection probability", "Cluster", "Centroid", "Cell"]
     if to_use == None:
         columns = df.columns
-        # ind_preamble=list(columns).index('Centroid Y µm')
-        to_use = columns  # [ind_preamble+1:-1]
-        to_use = [col for col in to_use if "label" not in col]
-        # to_use=[col for col in to_use if 'Circularity' not in col]
-        # to_use=[col for col in to_use if 'diameter' not in col]
-        to_use = [col for col in to_use if "Length" not in col]
-        to_use = [col for col in to_use if "Delaunay" not in col]
-        # to_use.append('Nucleus: Circularity')
-        to_use = [col for col in to_use if "Detection probability" not in col]
-        # to_use=[col for col in to_use if 'Smoothed' not in col]
-        # to_use=[col for col in to_use if 'Median' not in col]
-        to_use = [col for col in to_use if "Cluster" not in col]
-        to_use = [col for col in to_use if "Centroid" not in col]
-        # to_use=[col for col in to_use if 'Hematoxylin' not in col]
-        # to_use=[col for col in to_use if 'Eosin' not in col]
-        # to_use=[col for col in to_use if 'OD Sum' not in col]
-        # to_use.append('Smoothed: 50 µm: Nearby detection counts')
-        to_use = [col for col in to_use if "Cell" not in col]
-        # to_use=[col for col in to_use if 'Cytoplasm' not in col]
-        # to_use=[col for col in to_use if 'Diameter' not in col]
-        # to_use=[col for col in to_use if 'Haralick' not in col]
+        to_use = columns
+        for ignore in df_columns_to_ignore:
+            to_use = [col for col in to_use if ignore not in col]
 
-    print(f"using {len(to_use)} features: ")
-    print(to_use)
     if use_res:
         res_cols = [f"res{i}" for i in range(512)]
         to_use = to_use + res_cols
+
+    print(f"using {len(to_use)} features: ")
+    print(to_use)
 
     graphs, slide, Y = [], [], []
     for db_path in db_paths:
@@ -209,9 +206,10 @@ def mk_graphs(dataset="meso", to_use=None, use_res=True, load_graphs="graphs"):
     # normalize feats
     X_stack = []
     for g in graphs:
-        X_stack.append(g.x)
+        X_stack.append(g.x[::2,:]) # sample half the nodes for memory
     X_stack = np.vstack(X_stack)
     norm = StandardScaler().fit(X_stack)
+    X_stack = None
     for g in graphs:
         g.x = toTensor(norm.transform(g.x), requires_grad=False)
 
@@ -219,13 +217,13 @@ def mk_graphs(dataset="meso", to_use=None, use_res=True, load_graphs="graphs"):
         # save graphs
         by_core = True
         if not by_core:
-            with open(p.parent / "graphs_no_cell.pkl", "wb") as f:
+            with open(p.parent / "graphs.pkl", "wb") as f:
                 pickle.dump(graphs, f)
         else:
             # save the graphs in separate files per core
-            (p.parent / "graphs_no_cell").mkdir(exist_ok=True)
+            (p.parent / "graphs_").mkdir(exist_ok=True)
             for g in graphs:
-                with open(p.parent / "graphs_no_cell" / f"{g.core}.pkl", "wb") as f:
+                with open(p.parent / "graphs_" / f"{g.core}.pkl", "wb") as f:
                     pickle.dump(g, f)
 
     return graphs, slide, Y, to_use
