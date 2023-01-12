@@ -4,8 +4,11 @@ This repository is for code related to the MesoGraph cancer cell paper.
 
 The data referenced in the paper can be found at: https://drive.google.com/drive/folders/1AjH3J4oUb6rezBTKj_KvQviEa9U19Sml?usp=sharing 
 
-Model output can be visualized in a GUI we have developed here:
-https://github.com/measty/tiatoolbox built using tiatoolbox (https://github.com/TissueImageAnalytics/tiatoolbox) and bokeh (https://bokeh.org/).
+Model output can be visualized in a demo available here:
+https://mesograph.dcs.warwick.ac.uk/
+
+This is built using the visualization tool here:
+https://github.com/measty/tiatoolbox which uses tiatoolbox (https://github.com/TissueImageAnalytics/tiatoolbox) and bokeh (https://bokeh.org/).
 
 
 # Usage
