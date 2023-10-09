@@ -13,8 +13,6 @@ https://github.com/measty/tiatoolbox which uses tiatoolbox (https://github.com/T
 
 # Usage
 
-(need to add command line interface & args, and reqs)
-
 A graph can be constructed using mk_graph.py (for mesothelioma TMA core data) or generic_mk_graph (for generic datasets)
 
 Train the model using MesoGraph.py
